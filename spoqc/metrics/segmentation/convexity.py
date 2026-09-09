@@ -1,6 +1,7 @@
 import numpy as np
 import plotly.express as px
 import geopandas as gpd
+import shapely
 
 from typing import Tuple, List
 
@@ -61,14 +62,40 @@ def is_convex(polygon: List[Tuple[float, float]]) -> Tuple[bool, float]:
 
 # Function to assign nulcei to cell
 def find_overlapping_nuclei(cells: gpd.GeoDataFrame, nucleus: gpd.GeoDataFrame):
+    """Nucleus index labels whose centroid falls in each cell, one list per cell.
+
+    Previously this looped over cells calling GeoSeries.intersects(cell). That is
+    a *flat* vectorised GEOS predicate: it consults no spatial index, so it tested
+    every nucleus against every cell, and additionally allocated a fresh
+    GeoDataFrame per cell by boolean-masking the full nucleus table.
+
+    shapely.STRtree does the same join through an R-tree in a single call. The
+    same pattern is already used elsewhere in this package (see
+    overlap_area.py's STRtree usage).
+
+    Returns the identical structure as before: one list per cell, in cell order,
+    holding *index labels* of `nucleus` (callers use .loc on them, and
+    nuclei_count.py takes len()).
+    """
     print("[NOTE] Find overlapping nuceli for cells")
     timer = helperfuncs.Timer()
     timer.start()
-    overlaps = []
-    nucleus_centroids = nucleus.geometry.centroid
-    for cell in cells.geometry:
-        overlapping_indices = nucleus[nucleus_centroids.geometry.intersects(cell)].index.tolist()
-        overlaps.append(overlapping_indices)
+
+    centroids = nucleus.geometry.centroid.values
+    tree = shapely.STRtree(centroids)
+    # query() on an array returns (indices into the query geoms, indices into the tree)
+    cell_pos, nucleus_pos = tree.query(cells.geometry.values, predicate="intersects")
+
+    # emit in (cell, nucleus-row) order so each list matches the previous
+    # boolean-mask ordering over the nucleus table
+    order = np.lexsort((nucleus_pos, cell_pos))
+    cell_pos, nucleus_pos = cell_pos[order], nucleus_pos[order]
+
+    nucleus_labels = nucleus.index.to_numpy()
+    overlaps = [[] for _ in range(len(cells))]
+    for c, n in zip(cell_pos, nucleus_pos):
+        overlaps[c].append(nucleus_labels[n])
+
     timer.stop()
     return overlaps
 
