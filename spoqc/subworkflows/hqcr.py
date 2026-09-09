@@ -439,7 +439,7 @@ def cell_quality_probability_refinement(sdata, imagedim, image_type, resolution,
         legend_dict={"mask": "#FFFFFF", "empty": "#000000"}
     )
         
-    beliefs, labels = hqr.markov_random_field_zarr_parallel.first_version_loopy_belief_propagation_parallel(
+    beliefs, labels = hqr.solver().first_version_loopy_belief_propagation_parallel(
         average_cell_probability_image,
         spoqc_tmp_folder,
         'hqcr',
@@ -448,7 +448,7 @@ def cell_quality_probability_refinement(sdata, imagedim, image_type, resolution,
         normalize='total'
     )
 
-    hqr.markov_random_field_zarr_parallel.visualize_markov_calculation(average_cell_probability_image, labels[:], figure_path)
+    hqr.solver().visualize_markov_calculation(average_cell_probability_image, labels[:], figure_path)
     map_values_to_cells(sdata, polys, image_type, resolution, labels[:], res_col, figure_path, 'markov_labels')
 
     # Write out hqcr mask

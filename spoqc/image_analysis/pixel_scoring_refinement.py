@@ -56,7 +56,7 @@ def start_pixel_mask_refinement(
     beliefs_raw = image_ddf[f"{prefix}_beliefs"].compute().to_numpy()
 
     # Start the refinement of the proability for the pixel score.
-    beliefs, labels = hqr.markov_random_field_zarr_parallel.first_version_loopy_belief_propagation_parallel(
+    beliefs, labels = hqr.solver().first_version_loopy_belief_propagation_parallel(
         beliefs_raw.reshape((dim_x, dim_y)),
         spoqc_tmp_folder,
         modality,
@@ -65,7 +65,7 @@ def start_pixel_mask_refinement(
         normalize='total'
     )
 
-    hqr.markov_random_field_zarr_parallel.visualize_markov_calculation(
+    hqr.solver().visualize_markov_calculation(
         beliefs_raw.reshape((dim_x, dim_y)),
         labels[:],
         figure_path
