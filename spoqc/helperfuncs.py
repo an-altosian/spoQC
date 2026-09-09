@@ -962,7 +962,8 @@ def leiden_silhouette(adata, resolution, res_index, ninits=5):
         sc.tl.leiden(adata_test, resolution=resolution, key_added='temp_leiden', random_state=rs)
 
         if ( len(set(adata_test.obs['temp_leiden'])) > 1 ):
-            scores.append(silhouette_score(adata_test.obsm['X_umap'], adata_test.obs['temp_leiden']))
+            scores.append(silhouette_score(adata_test.obsm['X_umap'], adata_test.obs['temp_leiden'],
+                                           sample_size=min(10_000, adata_test.n_obs), random_state=0))
             num_clusters.append(len(set(adata_test.obs['temp_leiden'])))
             adata_test.obs.drop(columns=['temp_leiden'], inplace=True)
         else:

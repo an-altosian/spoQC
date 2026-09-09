@@ -30,7 +30,7 @@ def pixel_relevance(figure_path, xy_intensities, background_intensity, imagedim)
     print("[NOTE] Otsu thresholding")
     timer.start()
     _, segmented_image = cv2.threshold(blur, background_intensity, 
-                                       max(xy_intensities.flatten()), cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+                                       xy_intensities.max(), cv2.THRESH_BINARY+cv2.THRESH_OTSU)
     timer.stop()
 
     # Compute relevance map: pixels in the segmented region have value 1, others have 0
