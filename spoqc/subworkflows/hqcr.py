@@ -226,7 +226,19 @@ def create_cell_probability_image(sdata, polys, img, resolution, prob_col):
     height, width = int(dim_x), int(dim_y)
 
     # Define transform: (origin_x, origin_y, pixel_width, pixel_height)
-    transform = from_origin(0, height, 1, 1)  # top-left at (0, height), cell size = 1
+    #
+    # Polygon coordinates live in the 'global' coordinate system, which spatialdata
+    # pins to the FULL-resolution (scale0) pixel grid -- Xenium shapes carry a
+    # Scale(1/0.2125) transform into it. A lower pyramid level covers that same world
+    # extent with fewer pixels, so the pixel size is (world extent / pixel count) and
+    # cannot be assumed to be 1: at scale2 it is 4. Hardcoding 1 would rasterise every
+    # polygon at 4x the correct coordinate and drop ~94% of cells off the raster.
+    # At scale0 world extent == pixel count, so this reduces exactly to the previous
+    # from_origin(0, height, 1, 1) and behaviour there is unchanged.
+    _extent = sd.get_extent(sdata[img], coordinate_system='global')
+    _world_w = float(_extent['x'][1] - _extent['x'][0])
+    _world_h = float(_extent['y'][1] - _extent['y'][0])
+    transform = from_origin(0, _world_h, _world_w / width, _world_h / height)
 
     # Define your list of (polygon, value) tuples
     polygons_with_values = [ (row['geometry'], row[prob_col]) for index, row in polys.iterrows() ]
@@ -289,7 +301,19 @@ def map_values_to_cells(
     height, width = int(dim_x), int(dim_y)
 
     # Define transform: (origin_x, origin_y, pixel_width, pixel_height)
-    transform = from_origin(0, height, 1, 1)  # top-left at (0, height), cell size = 1
+    #
+    # Polygon coordinates live in the 'global' coordinate system, which spatialdata
+    # pins to the FULL-resolution (scale0) pixel grid -- Xenium shapes carry a
+    # Scale(1/0.2125) transform into it. A lower pyramid level covers that same world
+    # extent with fewer pixels, so the pixel size is (world extent / pixel count) and
+    # cannot be assumed to be 1: at scale2 it is 4. Hardcoding 1 would rasterise every
+    # polygon at 4x the correct coordinate and drop ~94% of cells off the raster.
+    # At scale0 world extent == pixel count, so this reduces exactly to the previous
+    # from_origin(0, height, 1, 1) and behaviour there is unchanged.
+    _extent = sd.get_extent(sdata[img], coordinate_system='global')
+    _world_w = float(_extent['x'][1] - _extent['x'][0])
+    _world_h = float(_extent['y'][1] - _extent['y'][0])
+    transform = from_origin(0, _world_h, _world_w / width, _world_h / height)
 
     polygons_with_values = zip(polys['geometry'], polys.index)
 
