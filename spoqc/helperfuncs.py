@@ -28,6 +28,7 @@ from matplotlib.colors import to_hex
 from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 from scipy.ndimage import gaussian_filter
+from scipy.spatial import cKDTree
 from scipy.stats import norm
 
 class ImageDimStruct(NamedTuple):
@@ -796,7 +797,7 @@ def points_within_radius(df: pd.DataFrame, radius: float, num: bool) -> List[Uni
     Parameters:
     df (pd.DataFrame): DataFrame containing at least two columns, 'x' and 'y', representing coordinates of points.
     radius (float): The radius within which to search for points.
-    num (bool): If True, return the number of points within the radius for each point. 
+    num (bool): If True, return the number of points within the radius for each point.
                 If False, return the indices of the points within the radius.
 
     Returns:
@@ -804,27 +805,26 @@ def points_within_radius(df: pd.DataFrame, radius: float, num: bool) -> List[Uni
         A list where each element corresponds to a point in `df`:
         - If `num` is True, the element is the count of points within the radius.
         - If `num` is False, the element is a list of indices of points within the radius.
-    """
-    points_in_radius = []
-    
-    for i, point in df.iterrows():
-        x1, y1 = point['x'], point['y']
-        
-        # Calculate the distance from this point to all other points
-        distances = np.sqrt((df['x'] - x1)**2 + (df['y'] - y1)**2)
-        
-        # Get the indices of points within the given radius (excluding the point itself)
-        close_points = df[distances <= radius].index.tolist()
-        close_points.remove(i)  # Remove the point itself from the list
-        
-        # Append the list of close points to the result.
-        if ( num ):
-            points_in_radius.append(len(close_points))
-        else:
-            points_in_radius.append(close_points)
-    
-    return points_in_radius
 
+    Implementation note: this used to iterate df.iterrows() and, per row, compute a
+    distance against every other point *and* materialise a filtered DataFrame copy
+    (`df[distances <= radius]`) just to read its index. That is O(n^2) in time with a
+    large constant. cKDTree answers the same radius query in O(n log n); the returned
+    values are identical, including the exclusion of the point itself and the use of
+    df's own index labels.
+    """
+    coords = df[['x', 'y']].to_numpy()
+    tree = cKDTree(coords)
+    neighbours = tree.query_ball_point(coords, radius, workers=-1)
+
+    labels = df.index.to_numpy()
+    points_in_radius = []
+    for pos, nb in enumerate(neighbours):
+        # query_ball_point includes the point itself; drop it as before
+        nb = [p for p in sorted(nb) if p != pos]
+        points_in_radius.append(len(nb) if num else [labels[p] for p in nb])
+
+    return points_in_radius
 
 def euclidean_distance(point1: Sequence[float], point2: Sequence[float]) -> float:
     """
