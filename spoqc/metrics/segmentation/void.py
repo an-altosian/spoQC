@@ -22,15 +22,11 @@ def count_stuff_in_triangles_via_delaunay(delaunay, stuff):
     counts = np.bincount(simplex_ids[simplex_ids >= 0], minlength=num_triangles)
 
     point_idx = np.nonzero(simplex_ids >= 0)[0]
-    order = np.argsort(simplex_ids[point_idx], kind='stable')
-    point_idx = point_idx[order]
-    sorted_simplex_ids = simplex_ids[point_idx]
-    boundaries = np.searchsorted(sorted_simplex_ids, np.arange(num_triangles + 1))
-    indices_list = [
-        (point_idx[boundaries[i]:boundaries[i + 1]],) for i in range(num_triangles)
-    ]
-
-    return counts, indices_list
+    # The per-triangle point-index lists used to be materialised here as a Python
+    # list of num_triangles array slices, on every one of the four call sites. The
+    # only consumer has been commented out since the function was written (see the
+    # disabled triangle_z_var block below), so building them was pure allocation.
+    return counts
 
 
 def build_triangle_graph_using_neighbors(delaunay, points):
@@ -139,7 +135,7 @@ def calc_void(
 
         plt.title("Triangle Connectivity Graph")
         plt.savefig(f'{figure_path}/traingle_connectivit_graph.png', bbox_inches='tight', dpi=300)
-        plt.savefig(f'{figure_path}/traingle_connectivit_graph.pdf', bbox_inches='tight', dpi=300)
+        helperfuncs.savefig_pdf(f'{figure_path}/traingle_connectivit_graph.pdf', bbox_inches='tight', dpi=300)
         plt.close()
 
     ###########################
@@ -157,7 +153,7 @@ def calc_void(
 
     figures.append(fig)
     fig.write_image(f"{figure_path}/boxplot_edge_lengths.png", scale=3)
-    fig.write_image(f"{figure_path}/boxplot_edge_lengths.pdf", scale=3)
+    helperfuncs.write_image_pdf(fig, f"{figure_path}/boxplot_edge_lengths.pdf", scale=3)
 
     with open(f'{figure_path}/void.html', 'w') as f:
         for fig in figures:
@@ -233,7 +229,7 @@ def calc_void(
     ax.set_title("Largest Enclosed Empty Patches")
     ax.set_aspect('equal', adjustable='box')
     plt.savefig(f'{figure_path}/spatial_traingle_all_clsuters.png', bbox_inches='tight', dpi=300)
-    plt.savefig(f'{figure_path}/spatial_traingle_all_clsuters.pdf', bbox_inches='tight', dpi=300)
+    helperfuncs.savefig_pdf(f'{figure_path}/spatial_traingle_all_clsuters.pdf', bbox_inches='tight', dpi=300)
     plt.close()
 
     timer.stop()
@@ -293,7 +289,7 @@ def calc_void(
             bbox_inches='tight',
             dpi=300
         )
-        plt.savefig(
+        helperfuncs.savefig_pdf(
             f'{figure_path}/spatial_traingle_filtered_clusters_{with_numbers}.pdf',
             bbox_inches='tight',
             dpi=300
@@ -322,7 +318,7 @@ def calc_void(
     transcripts_outside_cell_df = transcripts_df.loc[transcripts_df['cell_id'] == -1]
     transcript_ocell_coords = np.array(list(zip(transcripts_outside_cell_df['x'], transcripts_outside_cell_df['y'])))
     timer.start()
-    counts, indices = count_stuff_in_triangles_via_delaunay(delaunay, transcript_ocell_coords)
+    counts = count_stuff_in_triangles_via_delaunay(delaunay, transcript_ocell_coords)
     timer.stop()
     triangles_df['transcripts_counts_outside_cell'] = counts
 
@@ -348,7 +344,7 @@ def calc_void(
         transcripts_doublet_df = transcripts_outside_cell_df.loc[transcripts_outside_cell_df['doublet']]
         if ( len(transcripts_doublet_df) > 0 ):
             transcript_doublet_coords = np.array(list(zip(transcripts_doublet_df['x'], transcripts_doublet_df['y'])))
-            counts, indices = count_stuff_in_triangles_via_delaunay(delaunay, transcript_doublet_coords)
+            counts = count_stuff_in_triangles_via_delaunay(delaunay, transcript_doublet_coords)
             triangles_df['transcripts_counts_doublets'] = counts
         else:
             print(f'[NOTE] no doublets found')
@@ -367,7 +363,7 @@ def calc_void(
             if ( len(transcripts_contaminant_df) > 0 ):
                 transcript_contaminant_coords = np.array(list(zip(transcripts_contaminant_df['x'],
                                                               transcripts_contaminant_df['y'])))
-                counts, indices = count_stuff_in_triangles_via_delaunay(
+                counts = count_stuff_in_triangles_via_delaunay(
                     delaunay,
                     transcript_contaminant_coords
                 )
@@ -390,7 +386,7 @@ def calc_void(
         ) 
     )
     timer.stop()
-    counts, indices = count_stuff_in_triangles_via_delaunay(delaunay, nuclei_centoid_coords)
+    counts = count_stuff_in_triangles_via_delaunay(delaunay, nuclei_centoid_coords)
 
     # Lets just consider nulcei_counts > 3 because my triangle consists of 3 cells.
     # Of course this does not consider cells with multi-nucei or multiplets.
@@ -457,7 +453,7 @@ def calc_void(
         plt.ylabel(y)
 
         plt.savefig(f'{figure_path}/barplot_void_{y}.png', bbox_inches='tight', dpi=300)
-        plt.savefig(f'{figure_path}/barplot_void_{y}.pdf', bbox_inches='tight', dpi=300)
+        helperfuncs.savefig_pdf(f'{figure_path}/barplot_void_{y}.pdf', bbox_inches='tight', dpi=300)
         plt.close()
 
     #################################################
@@ -560,7 +556,7 @@ def calc_void(
             plt.colorbar(sm, ax=ax, label=cat)
 
             plt.savefig(f'{figure_path}/spatial_traingle_all_clsuters_{cat}.png', bbox_inches='tight', dpi=300)
-            plt.savefig(f'{figure_path}/spatial_traingle_all_clsuters_{cat}.pdf', bbox_inches='tight', dpi=300)
+            helperfuncs.savefig_pdf(f'{figure_path}/spatial_traingle_all_clsuters_{cat}.pdf', bbox_inches='tight', dpi=300)
             plt.close()
 
         else:

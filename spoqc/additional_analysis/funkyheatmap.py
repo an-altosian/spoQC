@@ -250,5 +250,5 @@ def plot_funkyheatmap(rna, figure_path):
 
     fig.subplots_adjust(right=0.82)
     plt.savefig(f'{figure_path}/funkyheatmap_1.png', bbox_inches='tight', dpi=300)
-    plt.savefig(f'{figure_path}/funkyheatmap_1.pdf', bbox_inches='tight', dpi=300)
+    helperfuncs.savefig_pdf(f'{figure_path}/funkyheatmap_1.pdf', bbox_inches='tight', dpi=300)
     plt.close()

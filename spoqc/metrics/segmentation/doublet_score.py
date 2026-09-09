@@ -69,7 +69,7 @@ def calc_doublet_score(
     plt.xlabel("x")
     plt.ylabel("y")
     plt.savefig(f'{figure_path}/scatter_signal_integrity.png')
-    plt.savefig(f'{figure_path}/scatter_signal_integrity.pdf')
+    helperfuncs.savefig_pdf(f'{figure_path}/scatter_signal_integrity.pdf')
     plt.close()
 
     transcripts_processed = ovrlp.transcripts.to_pandas()
@@ -90,7 +90,7 @@ def calc_doublet_score(
     ax.set_zlabel("z")
     plt.tight_layout(pad=2)
     plt.savefig(f'{figure_path}/scatter_signal_integrity_3d.png')
-    plt.savefig(f'{figure_path}/scatter_signal_integrity_3d.pdf')
+    helperfuncs.savefig_pdf(f'{figure_path}/scatter_signal_integrity_3d.pdf')
     plt.close()
 
     # Integrity density plot
@@ -110,12 +110,12 @@ def calc_doublet_score(
     plt.tight_layout()
 
     plt.savefig(f'{figure_path}/histogram_signal_integrity_and_signal.png')
-    plt.savefig(f'{figure_path}/histogram_signal_integrity_and_signal.pdf')
+    helperfuncs.savefig_pdf(f'{figure_path}/histogram_signal_integrity_and_signal.pdf')
     plt.close()
     fig = ovrlpy.plot_signal_integrity(ovrlp, signal_threshold=signal_threshold)
     plt.tight_layout()
     plt.savefig(f'{figure_path}/spatial_signal_integrity_map.png')
-    plt.savefig(f'{figure_path}/spatial_signal_integrity_map.pdf')
+    helperfuncs.savefig_pdf(f'{figure_path}/spatial_signal_integrity_map.pdf')
     plt.close()
 
     if ( len(doublet_df) < num_doublet ):
@@ -134,7 +134,7 @@ def calc_doublet_score(
         # Adjust layout to prevent overlap
         fig.tight_layout()
         fig.savefig(f'{figure_path}/doublet_case_{i}_zoomed.png')
-        fig.savefig(f'{figure_path}/doublet_case_{i}_zoomed.pdf')
+        helperfuncs.savefig_pdf(f'{figure_path}/doublet_case_{i}_zoomed.pdf')
 
         x, y = doublet_df.loc[doublet_case, ["x", "y"]]
         fig = ovrlpy.plot_region_of_interest(
@@ -145,7 +145,7 @@ def calc_doublet_score(
         )
         fig.tight_layout()
         fig.savefig(f'{figure_path}/doublet_case_{i}.png')
-        fig.savefig(f'{figure_path}/doublet_case_{i}.pdf')
+        helperfuncs.savefig_pdf(f'{figure_path}/doublet_case_{i}.pdf')
 
     # Link doublet detection back to spatial.
     # Based on a distance parameter say if a cell might be a doublet or not.
