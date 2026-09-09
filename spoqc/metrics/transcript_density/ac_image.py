@@ -1,5 +1,7 @@
 import spatialdata as sd
 import numpy as np
+
+from . import _grid
 import pandas as pd
 import dask.array as da
 import dask.dataframe as dd
@@ -59,20 +61,14 @@ def generate_transcript_ambient_density_image(
         .rename("morans_I")
     )
 
-    x_idx = range(int(imagedim.bb_xmin), int(imagedim.bb_xmax))
-    y_idx = range(int(imagedim.bb_ymin), int(imagedim.bb_ymax))
-    grid = [(x, y) for y in y_idx for x in x_idx]
-    grid_mi = pd.MultiIndex.from_tuples(grid, names=["x", "y"])
-
-    transcript_density_list = (
-        gm.reindex(grid_mi)     # align to the full grid
-        .fillna(0.0)
-        .to_numpy()
-        .astype("float64")
+    # See _grid: bin onto the SELECTED pyramid level, not the scale0 extent.
+    xy_transcript_density = _grid.bin_reduce(
+        xy_transcript_coords_df['x'].to_numpy(),
+        xy_transcript_coords_df['y'].to_numpy(),
+        xy_transcript_coords_df['morans_I'].to_numpy(),
+        imagedim, dim_x, dim_y, how="max",
     )
     timer.stop()
-
-    xy_transcript_density = np.array(transcript_density_list).reshape(dim_x, dim_y)
 
     img_extent = sd.get_extent(sdata[image_type], coordinate_system='global')
     imagedim = helperfuncs.ImageDimStruct(img_extent['x'][0], img_extent['y'][0],
@@ -109,15 +105,13 @@ def generate_transcript_ambient_density_image(
         .rename("local_moran_I")
     )
 
-    local_transcript_density_list = (
-        gm.reindex(grid_mi)     # align to the full grid
-        .fillna(0.0)
-        .to_numpy()
-        .astype("float64")
+    local_xy_transcript_density = _grid.bin_reduce(
+        xy_transcript_coords_df['x'].to_numpy(),
+        xy_transcript_coords_df['y'].to_numpy(),
+        xy_transcript_coords_df['local_moran_I'].to_numpy(),
+        imagedim, dim_x, dim_y, how="max",
     )
     timer.stop()
-
-    local_xy_transcript_density = np.array(local_transcript_density_list).reshape(dim_x, dim_y)
 
     # Create circular kernel (disk mask)
     kernel = mask.astype(local_xy_transcript_density.dtype)

@@ -143,6 +143,20 @@ def build_parser() -> argparse.ArgumentParser:
         required=False
     )
     parser.add_argument(
+        "--resolution",
+        dest="resolution",
+        type=str,
+        default="scale2",
+        help="Multiscale pyramid level of the morphology image used for all pixel-level "
+             "work. scale0 is native full resolution; each further level halves both "
+             "axes, so scale2 has 16x and scale3 64x fewer pixels. Runtime and peak "
+             "memory of every pixel-scaled stage are proportional to this. The "
+             "probability fields being smoothed are piecewise-constant over whole cells "
+             "or over a 100-cluster k-means, so scale0 carries no additional information "
+             "for them; select it only when you need native-resolution output masks.",
+        required=False
+    )
+    parser.add_argument(
         "--pixel_qc_chunk_size",
         dest="pixel_qc_chunk_size",
         type=int,
@@ -307,7 +321,7 @@ def main(argv: list[str] | None = None) -> None:
             return 'morphology_focus'
         @constant
         def RESOLUTION():
-            return 'scale0'
+            return args['resolution']
         @constant
         def STAINING():
             return args['staining']
