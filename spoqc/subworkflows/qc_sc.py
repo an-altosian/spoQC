@@ -12,7 +12,7 @@ def quick_viz_images(figure_path, image_names, sdata, flip=True):
         if flip:
             ax.invert_yaxis()
         plt.savefig(f'{figure_path}/all_images.png')
-        plt.savefig(f'{figure_path}/all_images.pdf')
+        helperfuncs.savefig_pdf(f'{figure_path}/all_images.pdf')
         plt.close()
 
     for i in image_names:
@@ -20,7 +20,7 @@ def quick_viz_images(figure_path, image_names, sdata, flip=True):
         if flip:
             ax.invert_yaxis()
         plt.savefig(f'{figure_path}/{i}.png')
-        plt.savefig(f'{figure_path}/{i}.pdf')
+        helperfuncs.savefig_pdf(f'{figure_path}/{i}.pdf')
         plt.close()
 
 def run_qc_sc(sdata, figure_path, CONST, obs_columns):

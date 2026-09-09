@@ -54,7 +54,7 @@ def plot_marker_density_and_scatter(sdata, figure_path, markers, name):
 
         plt.tight_layout()
         plt.savefig(f'{figure_path}/densityplot_{name}_{celltype}_markers.png', bbox_inches='tight', dpi=300)
-        plt.savefig(f'{figure_path}/densityplot_{name}_{celltype}_markers.pdf', bbox_inches='tight', dpi=300)
+        helperfuncs.savefig_pdf(f'{figure_path}/densityplot_{name}_{celltype}_markers.pdf', bbox_inches='tight', dpi=300)
         plt.close()
 
         # Set up the plot grid
@@ -75,7 +75,7 @@ def plot_marker_density_and_scatter(sdata, figure_path, markers, name):
 
         plt.tight_layout()
         plt.savefig(f'{figure_path}/scatterplot_{name}_{celltype}_markers.png', bbox_inches='tight', dpi=300)
-        plt.savefig(f'{figure_path}/scatterplot_{name}_{celltype}_markers.pdf', bbox_inches='tight', dpi=300)
+        helperfuncs.savefig_pdf(f'{figure_path}/scatterplot_{name}_{celltype}_markers.pdf', bbox_inches='tight', dpi=300)
         plt.close()
 
 
@@ -107,7 +107,7 @@ def plot_marker_density_and_scatter(sdata, figure_path, markers, name):
 
         plt.tight_layout()
         plt.savefig(f'{figure_path}/scatterplot_densityplot_{name}_{celltype}_markers.png', bbox_inches='tight', dpi=300)
-        plt.savefig(f'{figure_path}/scatterplot_densityplot_{name}_{celltype}_markers.pdf', bbox_inches='tight', dpi=300)
+        helperfuncs.savefig_pdf(f'{figure_path}/scatterplot_densityplot_{name}_{celltype}_markers.pdf', bbox_inches='tight', dpi=300)
         plt.close()
 
 
@@ -178,7 +178,7 @@ def plot_marker_boxplot(sdata, figure_path, markers, annotation_key, name):
 
     fig.write_html(f"{figure_path}/boxplot_{name}_plot.html")
     fig.write_image(f"{figure_path}/boxplot_{name}_plot.png", scale=3)
-    fig.write_image(f"{figure_path}/boxplot_{name}_plot.pdf", scale=3)
+    helperfuncs.write_image_pdf(fig, f"{figure_path}/boxplot_{name}_plot.pdf", scale=3)
 
 
 def compute_radius_lists(rna_adata, radius, annotation_key, markers, figure_path, name):
@@ -320,7 +320,7 @@ def plot_marker_radius_line(sdata, figure_path, markers, name, threads, annotati
     fig.update_traces(textfont=dict(size=18))
     fig.write_html(f"{figure_path}/lineplot_{name}_all_radiuses.html")
     fig.write_image(f"{figure_path}/lineplot_{name}_all_radiuses.png", scale=3)
-    fig.write_image(f"{figure_path}/lineplot_{name}_all_radiuses.pdf", scale=3)
+    helperfuncs.write_image_pdf(fig, f"{figure_path}/lineplot_{name}_all_radiuses.pdf", scale=3)
 
 
 def plot_sanpy_score_genes(sdata, figure_path, markers, name):
@@ -367,7 +367,7 @@ def plot_sanpy_score_genes(sdata, figure_path, markers, name):
 
     plt.tight_layout()
     plt.savefig(f'{figure_path}/scatterplot_densityplot_{name}_scanpy_gene_scores.png', bbox_inches='tight', dpi=300)
-    plt.savefig(f'{figure_path}/scatterplot_densityplot_{name}_scanpy_gene_scores.pdf', bbox_inches='tight', dpi=300)
+    helperfuncs.savefig_pdf(f'{figure_path}/scatterplot_densityplot_{name}_scanpy_gene_scores.pdf', bbox_inches='tight', dpi=300)
     plt.close()
 
     df = pd.DataFrame({'celltype': celltype_list,
@@ -400,7 +400,7 @@ def plot_sanpy_score_genes(sdata, figure_path, markers, name):
 
     fig.write_html(f"{figure_path}/boxplot_{name}_scanpy_gene_scores_plot.html")
     fig.write_image(f"{figure_path}/boxplot_{name}_scanpy_gene_scores_plot.png", scale=3)
-    fig.write_image(f"{figure_path}/boxplot_{name}_scanpy_gene_scores_plot.pdf", scale=3)
+    helperfuncs.write_image_pdf(fig, f"{figure_path}/boxplot_{name}_scanpy_gene_scores_plot.pdf", scale=3)
 
 
 def run_qc_marker(sdata, figure_path, CONST):
