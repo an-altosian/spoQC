@@ -188,8 +188,10 @@ def calc_doublet_score(
     sdata['table'].obs['wdoublet'] = np.array(cell_dobulet_df['wdoublet'])
     sdata['table'].obs['doublet_distance'] = np.array(cell_dobulet_df['doublet_distance'])
 
-    # Have to call this again because overlpy corrects also the transcript coordinates
-    transcript_coordinates_df = sdata.points[key_transcripts].compute()
+    # Have to call this again because overlpy corrects also the transcript coordinates.
+    # The reload is therefore required, not redundant -- but only x, y and the index are
+    # consumed below, so project to two columns instead of materialising all eight.
+    transcript_coordinates_df = sdata.points[key_transcripts][['x', 'y']].compute()
 
     # Detect transcript that might belong to doublets
     transcript_doublet = np.array([False] * len(transcript_coordinates_df))
