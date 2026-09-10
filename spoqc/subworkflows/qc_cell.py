@@ -29,7 +29,7 @@ def run_qc_cell(sdata, figure_path, CONST, obs_columns):
 
     print("[NOTE] Low transcript quality inspection")
     timer.start()
-    transcript_df = sdata['transcripts'].compute()
+    transcript_df = helperfuncs.load_transcripts(sdata, 'transcripts')
     # at 10x Genomics they use a threshold of qv < 20 (see 10x Baysor tutorial)
     subworkflows.qc_transcript.get_low_qc_transcript_count(transcript_df, sdata, 20, figure_path)
     timer.stop()
