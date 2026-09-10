@@ -32,7 +32,9 @@ def generate_transcript_quality_density_image(
     # Only the qv column is needed here. Selecting it before .compute() pushes the
     # projection into the reader, so one column is materialised instead of all eight
     # (~8 GB RSS for the full table). Same values, same index, same alignment.
-    xy_transcript_coords_df['qv'] = sdata['transcripts'][['qv']].compute()['qv']
+    xy_transcript_coords_df['qv'] = helperfuncs.load_transcripts(
+        sdata, 'transcripts', ['qv']
+    )['qv']
     del transcript_coords_df
 
     print("[NOTE] Calcualte pixel mean")

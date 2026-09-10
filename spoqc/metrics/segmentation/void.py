@@ -305,7 +305,7 @@ def calc_void(
     ##################################################
     #### Triangle cluster counting (outside cell) ####
     ##################################################
-    transcripts_df = sdata['transcripts'].compute()
+    transcripts_df = helperfuncs.load_transcripts(sdata, 'transcripts')
 
     # Doublet information has to be loaded here because I fill filter transcripts_df.
     doublet_check = False
