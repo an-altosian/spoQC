@@ -41,6 +41,19 @@ def _install_png_compress_default() -> None:
 
 _install_png_compress_default()
 
+# PDF stream compression. matplotlib defaults to zlib level 6; the streams are Flate,
+# i.e. lossless, so the level changes the FILE and never the rendered page. Verified by
+# rasterising both with pdftoppm at 150 dpi: pixel-identical, max channel difference 0
+# (tests/test_pdf_compression.py).
+#
+# Level 0 is ~1.5x faster on a PDF savefig. Level 1 is NOT worth setting -- measured at
+# 1625 ms/figure-pair against level 6's 1629 ms, i.e. no gain, so the choice is
+# effectively compress or do not.
+#
+# COST: uncompressed streams make PDFs ~3.6-4.2x larger (a run's PDF output goes from
+# ~131 MB to roughly 0.5 GB). Set this back to 6 if output size matters more than time.
+matplotlib.rcParams["pdf.compression"] = 0
+
 try:
     from importlib.metadata import version as _version
     __version__ = _version("spoqc")
