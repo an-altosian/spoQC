@@ -4,7 +4,38 @@ import seaborn as sns
 import pandas as pd
 import numpy as np
 
+from scipy.spatial import cKDTree
+
 from ... import helperfuncs
+
+
+def flag_transcripts_near_doublets(transcript_coordinates_df, corrected_doublet_df,
+                                   distance_thresh):
+    """Flag transcripts lying within `distance_thresh` of any detected doublet.
+
+    This used to loop over doublets and compute the distance from each one to EVERY
+    transcript, i.e. len(doublets) x len(transcripts) distances. On a full 913 Mpx sample
+    that is tens of millions of transcripts per doublet, and it measured 22% of wall clock.
+
+    A transcript is flagged when ANY doublet lies within `distance_thresh`, which is the
+    same question as whether its NEAREST doublet lies within `distance_thresh`. So a single
+    KD-tree over the (comparatively few) doublets, queried once with every transcript,
+    reproduces the old mask exactly -- same Euclidean metric, same inclusive `<=` boundary.
+    tests/test_spatial_index_equivalence.py asserts that against the original loop.
+
+    Returns a bool array aligned with `transcript_coordinates_df`.
+    """
+    if len(corrected_doublet_df) == 0:
+        return np.zeros(len(transcript_coordinates_df), dtype=bool)
+
+    transcript_xy = np.column_stack((
+        transcript_coordinates_df['x'].to_numpy(),
+        transcript_coordinates_df['y'].to_numpy(),
+    ))
+    doublet_tree = cKDTree(corrected_doublet_df[['x', 'y']].to_numpy())
+    nearest_doublet_distance, _ = doublet_tree.query(transcript_xy, k=1, workers=-1)
+    return nearest_doublet_distance <= distance_thresh
+
 
 # window_sizes = for plotting. You can selected more windowsizes. This is just to zoom in or out for double plots.
 # num_doublet = is just the amount of doublet that will be plottet as examples.
@@ -192,13 +223,10 @@ def calc_doublet_score(
     transcript_coordinates_df = sdata.points[key_transcripts].compute()
 
     # Detect transcript that might belong to doublets
-    transcript_doublet = np.array([False] * len(transcript_coordinates_df))
-    transcript_wdoublet = np.array([0] * len(transcript_coordinates_df))
-    for i, doublet in corrected_doublet_df.iterrows():
-        x1, y1 = doublet['x'], doublet['y']
-        distances = np.sqrt((transcript_coordinates_df['x'] - x1)**2 + (transcript_coordinates_df['y'] - y1)**2)
-        transcript_doublet[distances <= distance_thresh] = True
-        transcript_wdoublet[distances <= distance_thresh] = 1
+    transcript_doublet = flag_transcripts_near_doublets(
+        transcript_coordinates_df, corrected_doublet_df, distance_thresh
+    )
+    transcript_wdoublet = transcript_doublet.astype(np.int64)
 
     # Write out transcript doublet information for later usage
     transcript_doublet_df = pd.DataFrame({

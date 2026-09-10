@@ -64,11 +64,30 @@ def find_overlapping_nuclei(cells: gpd.GeoDataFrame, nucleus: gpd.GeoDataFrame):
     print("[NOTE] Find overlapping nuceli for cells")
     timer = helperfuncs.Timer()
     timer.start()
-    overlaps = []
-    nucleus_centroids = nucleus.geometry.centroid
-    for cell in cells.geometry:
-        overlapping_indices = nucleus[nucleus_centroids.geometry.intersects(cell)].index.tolist()
-        overlaps.append(overlapping_indices)
+    # This used to test every cell polygon against EVERY nucleus centroid: on a full
+    # sample that is ~167,780 x 167,780 point-in-polygon tests, measured at 20% of wall
+    # clock. sjoin applies the identical 'intersects' predicate through an R-tree.
+    #
+    # Both frames are joined positionally so the result cannot be perturbed by duplicate
+    # or non-monotonic index labels, and each cell's nucleus list is re-sorted into the
+    # original nucleus row order -- so the output matches the old loop element for element.
+    nucleus_labels = nucleus.index.tolist()
+    nucleus_centroids = gpd.GeoDataFrame(
+        geometry=nucleus.geometry.centroid.reset_index(drop=True), crs=nucleus.crs
+    )
+    cells_by_position = gpd.GeoDataFrame(
+        geometry=cells.geometry.reset_index(drop=True), crs=cells.crs
+    )
+    matches = gpd.sjoin(
+        nucleus_centroids, cells_by_position, how='inner', predicate='intersects'
+    )
+    by_cell = {}
+    for nucleus_pos, cell_pos in zip(matches.index, matches['index_right']):
+        by_cell.setdefault(cell_pos, []).append(nucleus_pos)
+    overlaps = [
+        [nucleus_labels[pos] for pos in sorted(by_cell.get(cell_pos, []))]
+        for cell_pos in range(len(cells_by_position))
+    ]
     timer.stop()
     return overlaps
 
