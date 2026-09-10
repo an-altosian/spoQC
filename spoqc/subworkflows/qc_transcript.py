@@ -164,7 +164,11 @@ def negativeprobeqc(sdata: Any, figure_path: str, key_transcripts: str) -> None:
         None: Saves the generated plot as a PNG file in the specified path.
     """
 
-    df = sdata[key_transcripts].compute()
+    # feature_name is matched below; x and y are needed because the frame is handed to
+    # plot_scatter_density_df, which reads df['x'], df['y'] and the density column. That
+    # is three of the transcript table's eight columns, so project rather than
+    # materialising all 42.6M x 8 values (~8 GB of RSS).
+    df = sdata[key_transcripts][['x', 'y', 'feature_name']].compute()
 
     match_neg_probes = [bool(re.compile('NegControlCodeword').match(x)) for x in list(df['feature_name'])]
 

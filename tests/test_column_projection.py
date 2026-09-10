@@ -12,6 +12,8 @@ invariant on a synthetic frame shaped like the real one, so they need no test da
 """
 from __future__ import annotations
 
+import os
+
 import dask.dataframe as dd
 import numpy as np
 import pandas as pd
@@ -71,3 +73,33 @@ def test_categorical_dtype_survives_projection(transcripts):
     projected = transcripts[['feature_name']].compute()['feature_name']
     assert isinstance(projected.dtype, pd.CategoricalDtype)
     assert list(np.array(projected)) == list(np.array(transcripts.compute()['feature_name']))
+
+
+def test_scatter_density_helper_needs_only_x_y_and_category():
+    """negativeprobeqc projects to x/y/feature_name; prove the plot helper needs no more.
+
+    The helper receives the frame wholesale, so the projection is only safe if it reads
+    nothing beyond those columns plus the derived category. Exercising it on exactly a
+    projected frame is what makes that a check rather than an assumption.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    from spoqc import helperfuncs
+
+    rng = np.random.default_rng(0)
+    projected = pd.DataFrame({
+        'x': rng.uniform(0, 100, 500),
+        'y': rng.uniform(0, 100, 500),
+        'feature_name': pd.Categorical(rng.choice(['NegControlCodeword_1', 'GeneA'], 500)),
+    })
+    projected['neg_probes'] = [
+        n.startswith('NegControlCodeword') for n in projected['feature_name'].astype(str)
+    ]
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as out:
+        helperfuncs.plot_scatter_density_df(
+            projected[projected['neg_probes']], out, 'neg_probes', 'neg_probes',
+            None, ['black'], 'Density of negative probes',
+        )
+        assert os.listdir(out), "helper produced no output from the projected frame"
