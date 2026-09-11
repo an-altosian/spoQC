@@ -6,6 +6,36 @@ import numpy as np
 
 from ... import helperfuncs
 
+
+def downsample_transcript_layers(transcripts, layers=range(-2, 3), stride=100):
+    """Rows for the 3D depth scatter, one (x, y) pair per depth layer, plus the aspect ratio.
+
+    `transcripts` is ovrlpy's polars frame holding every transcript in the sample. It used
+    to be materialised in full with .to_pandas() purely to feed this plot, which then keeps
+    1/stride of it and reads only x and y. A tree-RSS trace measured that one call adding
+    ~48 GB in under 10 s on a 229,970-cell 5K-panel sample, taking the run to 217.79 GB and
+    past the memory budget.
+
+    Filtering and striding in polars first, converting only the surviving two columns, feeds
+    the scatter identical rows in identical order:
+      - pandas `.between(i, i + 1)` is inclusive at both ends, hence >= / <=
+      - the stride is applied AFTER the filter, so the same rows survive
+      - polars `filter` preserves row order, like a pandas boolean mask
+      - the ratio uses FULL-column maxima, not the downsampled subset
+
+    tests/test_doublet_3d_plot_equivalence.py asserts this against the original verbatim.
+    """
+    depth = transcripts['z'] - transcripts['z_center']
+    per_layer = []
+    for i in layers:
+        subset = transcripts.filter((depth >= i) & (depth <= i + 1))
+        # downsample the number of transcripts
+        subset = subset.gather_every(stride).select(['x', 'y']).to_pandas()
+        per_layer.append((i, subset))
+    ratio = transcripts["x"].max() / transcripts["y"].max()
+    return per_layer, ratio
+
+
 # window_sizes = for plotting. You can selected more windowsizes. This is just to zoom in or out for double plots.
 # num_doublet = is just the amount of doublet that will be plottet as examples.
 # distance = Threshold to use to call a cell a doublet cell if its close to the detected doublet signal of ovrlpy.
@@ -72,18 +102,11 @@ def calc_doublet_score(
     plt.savefig(f'{figure_path}/scatter_signal_integrity.pdf')
     plt.close()
 
-    transcripts_processed = ovrlp.transcripts.to_pandas()
     fig = plt.figure(figsize=(10, 10))
     ax = plt.subplot(111, projection="3d")
-    for i in range(-2, 3):
-        subset = transcripts_processed[
-            (transcripts_processed['z'] - transcripts_processed['z_center']).between(i, i + 1)
-        ]
-        # downsample the number of transcripts
-        subset = subset[::100]
-
+    per_layer, ratio = downsample_transcript_layers(ovrlp.transcripts)
+    for i, subset in per_layer:
         ax.scatter(subset["x"], subset["y"], i, s=1, alpha=0.1)
-    ratio = transcripts_processed["x"].max() / transcripts_processed["y"].max()
     ax.set_box_aspect([ratio, 1, 0.75])
     ax.set_xlabel("x")
     ax.set_ylabel("y")
