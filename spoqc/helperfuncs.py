@@ -789,6 +789,22 @@ def flush_figures() -> int:
     return len(payloads)
 
 
+def ensure_written(path=None) -> int:
+    """Barrier: guarantee every queued figure is on disk before something reads one.
+
+    Deferred writes are invisible to code that reads a figure file back. spoQC does that
+    in exactly one place -- qc_wsi.generate_input writes
+    input_domain_thickness_analysis.png and measure_stripe_thickness_and_black_area then
+    cv2.imread's it -- and without this barrier imread returns None and OpenCV fails with
+    "!_src.empty() in function 'inRange'".
+
+    Flushes unconditionally rather than checking whether `path` is queued: the check is
+    easy to get wrong (a caller may pass a differently-normalised path) and a flush costs
+    one batch. `path` is accepted for documentation at the call site.
+    """
+    return flush_figures()
+
+
 def shutdown_figure_pool() -> int:
     """Flush and tear down the pool. Safe to call more than once."""
     global _FIG_POOL
