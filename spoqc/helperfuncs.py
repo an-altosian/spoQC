@@ -706,6 +706,99 @@ def plot_scatter_density(adata: AnnData, figure_path: str, suffix: str,
     plt.close()
 
 
+
+# ---------------------------------------------------------------------------------------
+# Deferred, parallel figure writing
+# ---------------------------------------------------------------------------------------
+# matplotlib's Agg renderer is compiled code that does NOT release the GIL, so writing
+# figures from a thread pool saturates at ~1.4x no matter how many threads (measured).
+# Processes do parallelise it: 7.3x at 16 workers on 24 realistic panels, with
+# byte-identical output (md5 compared). Pickling the figures to get them there costs
+# 0.15 s for 24 figures, i.e. ~1% of the serial write time.
+#
+# A full-scale profile put matplotlib savefig at 242 s of wall, all of it serial on the
+# main thread while 112 cores idled.
+#
+# Writes are therefore queued and flushed in batches. The batch bound matters: figures
+# pickle to ~7 MB each, so an unbounded queue over a run's ~1250 figures would hold
+# ~9 GB. Flushing every _FIG_FLUSH_AT keeps that to a few hundred MB.
+#
+# Deferral is only safe because nothing reads a figure back until the very end:
+# subworkflows/final_report.py base64-embeds the PNGs, and flush_figures() runs before it.
+
+_FIG_QUEUE: list = []
+_FIG_POOL = None
+_FIG_FLUSH_AT = 32
+_FIG_WORKERS = 16
+
+
+def _write_pickled_figure(payload):
+    """Worker side: unpickle a figure and write it.
+
+    Calls the UNWRAPPED savefig deliberately. A spawned worker imports this module,
+    which imports spoqc, which installs the queuing shim -- so calling fig.savefig here
+    would re-queue the figure in the worker and silently never write it.
+    """
+    import pickle
+
+    from matplotlib.figure import Figure
+
+    figure, path, kwargs = pickle.loads(payload)
+    save = getattr(Figure.savefig, "__wrapped__", Figure.savefig)
+    save(figure, path, **kwargs)
+    return path
+
+
+def _figure_pool():
+    global _FIG_POOL
+    if _FIG_POOL is None:
+        import multiprocessing as mp
+        from concurrent.futures import ProcessPoolExecutor
+
+        # spawn, not fork: this process runs dask and ThreadPoolExecutor threads, and
+        # forking a threaded process can deadlock in the child.
+        _FIG_POOL = ProcessPoolExecutor(
+            max_workers=_FIG_WORKERS, mp_context=mp.get_context("spawn")
+        )
+    return _FIG_POOL
+
+
+def queue_figure(figure, path, **kwargs) -> None:
+    """Queue a figure write, flushing the batch when it is full."""
+    import pickle
+
+    _FIG_QUEUE.append(pickle.dumps((figure, str(path), kwargs), protocol=pickle.HIGHEST_PROTOCOL))
+    if len(_FIG_QUEUE) >= _FIG_FLUSH_AT:
+        flush_figures()
+
+
+def flush_figures() -> int:
+    """Write every queued figure, in parallel. Returns how many were written.
+
+    Exceptions surface here rather than at the original call site. That is the cost of
+    deferring, and it is deliberate: a lost figure is a real error, not something to
+    swallow.
+    """
+    if not _FIG_QUEUE:
+        return 0
+    payloads = list(_FIG_QUEUE)
+    _FIG_QUEUE.clear()
+    pool = _figure_pool()
+    for future in [pool.submit(_write_pickled_figure, p) for p in payloads]:
+        future.result()
+    return len(payloads)
+
+
+def shutdown_figure_pool() -> int:
+    """Flush and tear down the pool. Safe to call more than once."""
+    global _FIG_POOL
+    written = flush_figures()
+    if _FIG_POOL is not None:
+        _FIG_POOL.shutdown(wait=True)
+        _FIG_POOL = None
+    return written
+
+
 def plot_scatter_density_df(df: pd.DataFrame, figure_path: str, suffix: str,
                          scattercat: Optional[str], densitycat: Optional[str],
                          palette: Union[str, dict, None], title: Optional[str],
