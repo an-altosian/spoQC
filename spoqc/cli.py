@@ -22,6 +22,7 @@ from spatialdata.models import PointsModel
 
 # Own scripts
 from spoqc import general
+from spoqc import memory
 from spoqc import hqr
 from spoqc import helperfuncs
 from spoqc import process_datasets
@@ -146,7 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--pixel_qc_chunk_size",
         dest="pixel_qc_chunk_size",
         type=int,
-        default=200_000,
+        default=None,
         help="Row-chunk size for the pixel-level QC dask arrays/dataframes (hqpr/hqtr clustering and scoring). Larger values reduce dask task-graph overhead but increase peak memory per chunk.",
         required=False
     )
@@ -154,8 +155,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--kmeans_sample_size",
         dest="kmeans_sample_size",
         type=int,
-        default=5_000_000,
+        default=None,
         help="Number of pixels randomly subsampled to fit the pixel-cluster MiniBatchKMeans model (hqpr/hqtr). The full dataset is then labeled in parallel using the fitted model.",
+        required=False
+    )
+    parser.add_argument(
+        "--mem",
+        dest="mem",
+        type=float,
+        default=None,
+        help="Memory budget for this run, in GB. Peak resident set of the whole "
+             "process group (including worker processes) is sampled against it, and "
+             "the run is terminated with a diagnostic if it is exceeded -- so an "
+             "overrun is spoQC's own loud failure rather than a kernel OOM kill that "
+             "can take out the shell or a co-tenant job. The budget also derives the "
+             "tunables that determine peak usage: the dask row-chunk size, the "
+             "k-means fitting subsample, and how many worker processes may run at "
+             "once. Defaults to 80%% of detected available memory.",
         required=False
     )
     parser.add_argument(
@@ -235,6 +251,9 @@ def main(argv: list[str] | None = None) -> None:
             else:
                 return int(args['threads'])
         @constant
+        def MEM_BUDGET():
+            return memory.budget_bytes(args['mem'])
+        @constant
         def OVERWRITE():
             return args['overwrite']
         @constant
@@ -313,10 +332,34 @@ def main(argv: list[str] | None = None) -> None:
             return args['staining']
         @constant
         def PIXEL_QC_CHUNK_SIZE():
-            return args['pixel_qc_chunk_size']
+            # An explicit flag wins; otherwise size the chunk to the memory budget.
+            # A pixel-QC row carries roughly a dozen float64 columns plus index
+            # overhead, so ~200 B/row is the working figure.
+            if args['pixel_qc_chunk_size'] is not None:
+                return args['pixel_qc_chunk_size']
+            return memory.derive_chunk_size(
+                memory.budget_bytes(args['mem']), bytes_per_row=200
+            )
         @constant
         def KMEANS_SAMPLE_SIZE():
-            return args['kmeans_sample_size']
+            # An explicit flag wins; otherwise cap the fitting subsample so the
+            # densified sample cannot itself blow the budget. The sample is
+            # n_pixels x n_features float64.
+            if args['kmeans_sample_size'] is not None:
+                return args['kmeans_sample_size']
+            budget = memory.budget_bytes(args['mem'])
+            return max(100_000, min(5_000_000,
+                       int(budget * memory.ALLOCATION_HEADROOM / (8 * 16))))
+        @constant
+        def MAX_WORKERS():
+            # Process fan-out multiplies memory by the worker count, so cap -n by
+            # what the budget can hold. Measured per-worker peak for the leiden
+            # sweep was ~2.8 GB at 8k cells; 3 GB is the conservative figure.
+            return memory.derive_max_workers(
+                memory.budget_bytes(args['mem']),
+                per_worker_bytes=3 * 10**9,
+                requested=int(args['threads']),
+            )
         @constant
         def THRESHOLD_PRIOR_PIXEL():
             return args['thresh_prior_pixel']
@@ -364,6 +407,15 @@ def main(argv: list[str] | None = None) -> None:
 
     # Blosc threads (for the Zarr datasets we still write)
     os.environ["BLOSC_NTHREADS"] = str(CONST.THREADS)
+
+    # ---------------- Memory budget ------------
+    # Peak RSS is set by the chunk/subsample/worker knobs below; derive them from the
+    # budget instead of using fixed defaults, then sample the real process-group RSS
+    # against it so an overrun fails here, loudly, instead of being OOM-killed.
+    _mem_budget = CONST.MEM_BUDGET
+    print(f"[NOTE] Memory budget: {memory.format_gb(_mem_budget)}"
+          + ("" if args['mem'] is not None else " (80% of available; set --mem to pin it)"))
+    _mem_watchdog = memory.Watchdog(_mem_budget).start()
     # Timer
     timer = helperfuncs.Timer()
 
