@@ -706,6 +706,59 @@ def plot_scatter_density(adata: AnnData, figure_path: str, suffix: str,
     plt.close()
 
 
+
+# ---------------------------------------------------------------------------------------
+# Single-load policy for the transcript table
+# ---------------------------------------------------------------------------------------
+# The transcript table is the largest object in the pipeline: 42.6M rows x 8 columns on a
+# full Xenium sample. Materialising it costs ~6 s and ~8.7 GB of RSS, and it used to be
+# .compute()'d independently at ten call sites, which is what drove a 39 GB peak.
+#
+# Policy: load each piece of data ONCE, run every computation that needs it, then release
+# it. Nothing large stays resident past the phase that needs it.
+#
+# load_transcripts() materialises the table at most once per key and serves every later
+# caller from that single copy. Callers get their own frame for the columns they asked
+# for, so one consumer adding a column (several do) cannot corrupt another's view.
+# release_transcripts() drops the cached copy; call it when the transcript-consuming
+# phase is done.
+#
+# The cache is also the mechanism that makes a *legitimate* reload explicit: ovrlpy
+# rewrites the transcript coordinates in place, so calc_doublet_score releases the cache
+# after running it and the next load picks up the corrected coordinates.
+
+_TRANSCRIPT_CACHE: dict = {}
+
+
+def load_transcripts(sdata, key: str = 'transcripts', columns=None) -> pd.DataFrame:
+    """Materialise the transcript table at most once, then serve from that copy.
+
+    Args:
+        sdata: the SpatialData object.
+        key: points key holding the transcripts.
+        columns: columns to return. None returns every column.
+
+    Returns:
+        A DataFrame the caller owns and may mutate freely. The index always matches the
+        full table's index, so assignments aligned on it behave as before.
+    """
+    if key not in _TRANSCRIPT_CACHE:
+        _TRANSCRIPT_CACHE[key] = sdata[key].compute()
+    frame = _TRANSCRIPT_CACHE[key]
+    if columns is None:
+        return frame.copy()
+    return frame.loc[:, list(columns)].copy()
+
+
+def release_transcripts(key: str = None) -> None:
+    """Drop the cached transcript table so its memory goes back to the OS."""
+    if key is None:
+        _TRANSCRIPT_CACHE.clear()
+    else:
+        _TRANSCRIPT_CACHE.pop(key, None)
+    gc.collect()
+
+
 def plot_scatter_density_df(df: pd.DataFrame, figure_path: str, suffix: str,
                          scattercat: Optional[str], densitycat: Optional[str],
                          palette: Union[str, dict, None], title: Optional[str],

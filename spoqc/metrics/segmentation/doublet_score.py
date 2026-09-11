@@ -25,7 +25,7 @@ def calc_doublet_score(
         distance_thresh,
 ):
 
-    transcript_coordinates_df = sdata.points[key_transcripts].compute()
+    transcript_coordinates_df = helperfuncs.load_transcripts(sdata, key_transcripts)
     transcript_coordinates_df = transcript_coordinates_df.rename(columns={'feature_name': 'gene'})
 
     # ovrlpy does a werid thing to overwrite the coordinates and set the origin to 0.0.
@@ -188,8 +188,16 @@ def calc_doublet_score(
     sdata['table'].obs['wdoublet'] = np.array(cell_dobulet_df['wdoublet'])
     sdata['table'].obs['doublet_distance'] = np.array(cell_dobulet_df['doublet_distance'])
 
-    # Have to call this again because overlpy corrects also the transcript coordinates
-    transcript_coordinates_df = sdata.points[key_transcripts].compute()
+    # Have to call this again because overlpy corrects also the transcript coordinates.
+    # The reload is therefore required, not redundant -- but only x, y and the index are
+    # consumed below, so project to two columns instead of materialising all eight.
+    # ovrlpy rewrote the coordinates in place, so the cached copy is now stale: drop it
+    # and reload. This is the one reload the single-load policy still requires, and
+    # making it explicit is the point -- only x, y and the index are consumed here.
+    helperfuncs.release_transcripts(key_transcripts)
+    transcript_coordinates_df = helperfuncs.load_transcripts(
+        sdata, key_transcripts, ['x', 'y']
+    )
 
     # Detect transcript that might belong to doublets
     transcript_doublet = np.array([False] * len(transcript_coordinates_df))

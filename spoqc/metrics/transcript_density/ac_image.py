@@ -36,7 +36,11 @@ def generate_transcript_ambient_density_image(
     xy_transcript_coords_df['morans_I'] = np.zeros(len(xy_transcript_coords_df))
 
     # Attach ambient score to transcript df.
-    features = np.array(sdata['transcripts'].compute()['feature_name'])
+    # Only feature_name is needed. Project before .compute() so the other seven
+    # columns of the 42.6M-row table are never materialised.
+    features = np.array(
+        helperfuncs.load_transcripts(sdata, 'transcripts', ['feature_name'])['feature_name']
+    )
     global_ambient.index = [i for i in range(0, len(global_ambient))]
     global_ambient.loc[np.isnan(global_ambient['morans_I']),'morans_I'] = 0.0 # Sometimes you have nan for moran's I.
 
