@@ -138,6 +138,23 @@ def _calculate_embedding_batched(genes, mask, components, bandwidth, dtype=None,
 
     It also accumulates in float64 throughout, where ovrlpy blurs in float32 before
     promoting to float64 via the factor; that is a second, much smaller difference.
+
+    NOT INSTALLED, and kept only as a record. ovrlpy uses patch_length=500, so a
+    25778x35416 sample is ~3700 patches and most of them are sparse. This function pays
+    a FIXED cost per patch -- a full dense (patch x n_components) GEMM plus blur -- no
+    matter how few genes are present, whereas ovrlpy's cost scales with genes present and
+    crops each gene to its own small bbox. Measured on a 520x520 patch with clustered
+    genes:
+
+        genes/patch      ovrlpy    rank-1   batched
+                  5     0.072s    0.034s    0.154s   <- batched 2.1x SLOWER
+                 20     0.205s    0.078s    0.149s
+                 60     0.601s    0.197s    0.165s
+                150     1.432s    0.471s    0.204s
+
+    So it wins only on dense patches, and a full-scale run stalled in doublet QC with it
+    enabled. The rank-1 variant is a strict 2.1-3.0x in every regime and is exact to
+    1 ULP, so that is what install() binds.
     """
     from queue import Empty
 
@@ -217,7 +234,7 @@ def install() -> bool:
         )
         return False
 
-    _utils._calculate_embedding = _calculate_embedding_batched
+    _utils._calculate_embedding = _calculate_embedding_fast
     # _ovrlp imported the symbol directly, so it needs rebinding too.
-    _ovrlp._calculate_embedding = _calculate_embedding_batched
+    _ovrlp._calculate_embedding = _calculate_embedding_fast
     return True
