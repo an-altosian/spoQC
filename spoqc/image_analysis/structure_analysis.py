@@ -53,7 +53,8 @@ def start_image_struc_analyis(
 
         # Plot transcript point plot
         helperfuncs.plot_scatter_by_category(
-            sdata.points['transcripts'].compute(),
+            # plot_scatter_by_category reads x/y and hue=key; key is None here.
+            helperfuncs.load_transcripts(sdata, 'transcripts', ['x', 'y']),
             None, 
             figure_path, 
             'transcript_points',

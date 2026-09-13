@@ -305,7 +305,19 @@ def calc_void(
     ##################################################
     #### Triangle cluster counting (outside cell) ####
     ##################################################
-    transcripts_df = sdata['transcripts'].compute()
+    # This section reads only cell_id (the outside-cell filter), x/y (triangle counting)
+    # and feature_name (the contaminant filter); `doublet` arrives from the joined
+    # parquet below, not from the points table, and the z use in the variance block is
+    # commented out. A full-scale run died in this stage at a 216.55 GB tree peak with
+    # the parent holding nearly all of it.
+    #
+    # Drop whatever wider copy an earlier stage cached first, otherwise
+    # load_transcripts serves this request by slicing that frame and the projection
+    # buys nothing.
+    helperfuncs.release_transcripts('transcripts')
+    transcripts_df = helperfuncs.load_transcripts(
+        sdata, 'transcripts', ['x', 'y', 'cell_id', 'feature_name']
+    )
 
     # Doublet information has to be loaded here because I fill filter transcripts_df.
     doublet_check = False
