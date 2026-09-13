@@ -140,7 +140,11 @@ def calculate_local_moran_I_values(sdata, threads):
     #   all_I:   (n, num_genes) Moran's I per center cell and gene
     
     # Make sure dtypes match your all_ids / var_names
-    transcripts_df = helperfuncs.load_transcripts(sdata, 'transcripts')
+    # Reads cell_id and feature_name (grouping), then x/y for the spatial weights;
+    # local_moran_I is a column this function adds itself.
+    transcripts_df = helperfuncs.load_transcripts(
+        sdata, 'transcripts', ['x', 'y', 'cell_id', 'feature_name']
+    )
     transcripts_cell_id = transcripts_df["cell_id"].to_numpy()
     transcripts_feature = transcripts_df["feature_name"].to_numpy()
 

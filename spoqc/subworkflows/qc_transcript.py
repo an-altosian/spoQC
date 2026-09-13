@@ -131,7 +131,9 @@ def transcriptqc(sdata, figure_path, annotation_file, key_transcripts):
     fig.write_image(f"{figure_path}/transctipt_type_pie.png", scale=3)
     fig.write_image(f"{figure_path}/transctipt_type_pie.pdf", scale=3)
 
-    df = helperfuncs.load_transcripts(sdata, key_transcripts)
+    # The plots below read x/y plus qv; 'location' and 'feature_type' are columns this
+    # function assigns onto the frame, not columns of the points table.
+    df = helperfuncs.load_transcripts(sdata, key_transcripts, ['x', 'y', 'qv'])
 
     df['location'] = location_list
     df['feature_type'] = rna_types_sdata
