@@ -143,6 +143,23 @@ def build_parser() -> argparse.ArgumentParser:
         required=False
     )
     parser.add_argument(
+        "--mrf_solver",
+        dest="mrf_solver",
+        type=str,
+        choices=["graphcut", "lbp"],
+        default="lbp",
+        help="Solver for the binary Markov random field that smooths the pixel and "
+             "cell quality maps. Defaults to 'lbp', the iterative loopy belief "
+             "propagation spoQC has always used -- this flag does not change any "
+             "default behaviour. 'graphcut' finds the exact global minimum of the same "
+             "energy with a single s-t min cut: faster, no message file on disk, and a "
+             "strictly lower energy, but it assigns a different label to 1-2%% of "
+             "pixels and it holds the whole graph in RAM (~260 B/node, so ~240 GB at "
+             "the default scale0 resolution). It is therefore opt-in, and practical "
+             "only together with a coarser --resolution.",
+        required=False
+    )
+    parser.add_argument(
         "--pixel_qc_chunk_size",
         dest="pixel_qc_chunk_size",
         type=int,
@@ -312,6 +329,9 @@ def main(argv: list[str] | None = None) -> None:
         def STAINING():
             return args['staining']
         @constant
+        def MRF_SOLVER():
+            return args['mrf_solver']
+        @constant
         def PIXEL_QC_CHUNK_SIZE():
             return args['pixel_qc_chunk_size']
         @constant
@@ -361,6 +381,9 @@ def main(argv: list[str] | None = None) -> None:
         f"using: {active_threads}"
     )
     numba.set_num_threads(active_threads)
+
+    # select the MRF solver once, for every downstream call site
+    hqr.SOLVER = CONST.MRF_SOLVER
 
     # Blosc threads (for the Zarr datasets we still write)
     os.environ["BLOSC_NTHREADS"] = str(CONST.THREADS)
