@@ -19,15 +19,41 @@ from spoqc import helperfuncs
 
 
 class FakePoints:
-    """Stands in for a dask points frame, counting how often it is materialised."""
+    """Stands in for a dask points frame, counting materialisations AND projections.
+
+    A real dask DataFrame supports `df[['a', 'b']]` and builds only those columns, which
+    is the whole point of projecting before `.compute()`: on 674,599,124 real transcripts
+    the full 13-column table costs 65.6 GB and takes RssAnon from 2.20 to 90.44 GB, while
+    the four columns ovrlpy reads cost 14.8 GB and reach 38.59 GB. `materialised_columns`
+    records what each `.compute()` actually built, so an implementation that slices AFTER
+    materialising is caught instead of passing silently -- both produce the same values.
+    """
 
     def __init__(self, frame):
         self._frame = frame
         self.computes = 0
+        self.materialised_columns: list = []
+
+    def __getitem__(self, columns):
+        return FakeProjection(self, list(columns))
 
     def compute(self):
         self.computes += 1
+        self.materialised_columns.append(list(self._frame.columns))
         return self._frame.copy()
+
+
+class FakeProjection:
+    """What selecting columns on a FakePoints returns, as dask would."""
+
+    def __init__(self, parent, columns):
+        self._parent = parent
+        self._columns = columns
+
+    def compute(self):
+        self._parent.computes += 1
+        self._parent.materialised_columns.append(list(self._columns))
+        return self._parent._frame.loc[:, self._columns].copy()
 
 
 class FakeSdata:
@@ -120,3 +146,39 @@ def test_release_without_key_clears_everything(frame):
     helperfuncs.release_transcripts()
     helperfuncs.load_transcripts(sdata, 'transcripts')
     assert sdata.points['transcripts'].computes == 2
+
+
+def test_projection_happens_before_materialising(frame):
+    """The requested columns are the only ones BUILT -- not sliced off afterwards.
+
+    This is the property that removed 126.55 GB of peak on the real dataset
+    (165.14 -> 38.59 GB). Slicing a fully materialised frame yields identical values, so
+    only a check on what was built can tell the two implementations apart.
+    """
+    sdata = FakeSdata(frame)
+    got = helperfuncs.load_transcripts(sdata, 'transcripts', ['x', 'y'])
+
+    points = sdata.points['transcripts']
+    assert points.materialised_columns == [['x', 'y']], (
+        f"materialised {points.materialised_columns}, so the full table was built and "
+        "then sliced -- the memory is spent either way"
+    )
+    assert list(got.columns) == ['x', 'y']
+
+
+def test_projected_values_match_slicing_the_full_table(frame):
+    """Projecting early must change the peak, never the data."""
+    full = helperfuncs.load_transcripts(FakeSdata(frame), 'transcripts')
+    helperfuncs.release_transcripts()
+    projected = helperfuncs.load_transcripts(FakeSdata(frame), 'transcripts', ['x', 'y'])
+    pd.testing.assert_frame_equal(full.loc[:, ['x', 'y']], projected)
+
+
+def test_a_wider_request_is_not_served_by_a_narrower_cache(frame):
+    """Subset-serving must only go one way: narrow from wide, never wide from narrow."""
+    sdata = FakeSdata(frame)
+    narrow = helperfuncs.load_transcripts(sdata, 'transcripts', ['x'])
+    wider = helperfuncs.load_transcripts(sdata, 'transcripts', ['x', 'y', 'qv'])
+
+    assert list(narrow.columns) == ['x']
+    assert list(wider.columns) == ['x', 'y', 'qv']

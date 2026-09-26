@@ -87,7 +87,13 @@ def calc_doublet_score(
         distance_thresh,
 ):
 
-    transcript_coordinates_df = helperfuncs.load_transcripts(sdata, key_transcripts)
+    # ovrlpy reads only the coordinates and the gene label: compute_VSI selects
+    # ['gene', 'x_pixel', 'y_pixel', 'z', 'z_center'] and _sample_expression selects the
+    # coordinate columns plus 'gene'. Loading all 13 columns of the points table cost
+    # 65.6 GB in pandas (measured, 674,599,124 rows) for 9 columns nothing here reads.
+    transcript_coordinates_df = helperfuncs.load_transcripts(
+        sdata, key_transcripts, ['x', 'y', 'z', 'feature_name']
+    )
     transcript_coordinates_df = transcript_coordinates_df.rename(columns={'feature_name': 'gene'})
 
     # ovrlpy does a werid thing to overwrite the coordinates and set the origin to 0.0.
