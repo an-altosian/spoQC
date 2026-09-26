@@ -7,6 +7,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from ... import helperfuncs
+from ... import _ovrlpy_fast
 
 
 def flag_transcripts_near_doublets(transcript_coordinates_df, corrected_doublet_df,
@@ -72,6 +73,11 @@ def calc_doublet_score(
         n_components = 10
     if ( sdata['table'].n_obs < 100 ):
         n_components = 2
+
+    # Accumulate ovrlpy's per-gene embedding with an in-place BLAS rank-1 update rather
+    # than a fresh (n_pixels, n_components) temporary per gene. Version-guarded; a no-op
+    # on any ovrlpy this shim was not written against. See spoqc/_ovrlpy_fast.py.
+    _ovrlpy_fast.install()
 
     ovrlp = ovrlpy.Ovrlp(
         transcript_coordinates_df,
