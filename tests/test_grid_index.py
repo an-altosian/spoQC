@@ -122,4 +122,8 @@ class TestNoCallSiteBuildsTuples:
         assert "for y in y_idx for x in x_idx" not in src, (
             f"{module} still materialises a tuple per pixel"
         )
-        assert "MultiIndex.from_product(" in src
+        # The stage-1 change built the grid with MultiIndex.from_product. This PR
+        # supersedes that with _grid, which has to bin onto the SELECTED pyramid
+        # level rather than the scale0 extent, so either construction is
+        # acceptable here -- what must not come back is the tuple per pixel.
+        assert "MultiIndex.from_product(" in src or "_grid." in src
