@@ -35,6 +35,33 @@ def flag_transcripts_near_doublets(transcript_coordinates_df, corrected_doublet_
     doublet_tree = cKDTree(corrected_doublet_df[['x', 'y']].to_numpy())
     nearest_doublet_distance, _ = doublet_tree.query(transcript_xy, k=1, workers=-1)
     return nearest_doublet_distance <= distance_thresh
+def downsample_transcript_layers(transcripts, layers=range(-2, 3), stride=100):
+    """Rows for the 3D depth scatter, one (x, y) pair per depth layer, plus the aspect ratio.
+
+    `transcripts` is ovrlpy's polars frame holding every transcript in the sample. It used
+    to be materialised in full with .to_pandas() purely to feed this plot, which then keeps
+    1/stride of it and reads only x and y. A tree-RSS trace measured that one call adding
+    ~48 GB in under 10 s on a 229,970-cell 5K-panel sample, taking the run to 217.79 GB and
+    past the memory budget.
+
+    Filtering and striding in polars first, converting only the surviving two columns, feeds
+    the scatter identical rows in identical order:
+      - pandas `.between(i, i + 1)` is inclusive at both ends, hence >= / <=
+      - the stride is applied AFTER the filter, so the same rows survive
+      - polars `filter` preserves row order, like a pandas boolean mask
+      - the ratio uses FULL-column maxima, not the downsampled subset
+
+    tests/test_doublet_3d_plot_equivalence.py asserts this against the original verbatim.
+    """
+    depth = transcripts['z'] - transcripts['z_center']
+    per_layer = []
+    for i in layers:
+        subset = transcripts.filter((depth >= i) & (depth <= i + 1))
+        # downsample the number of transcripts
+        subset = subset.gather_every(stride).select(['x', 'y']).to_pandas()
+        per_layer.append((i, subset))
+    ratio = transcripts["x"].max() / transcripts["y"].max()
+    return per_layer, ratio
 
 
 # window_sizes = for plotting. You can selected more windowsizes. This is just to zoom in or out for double plots.
@@ -56,7 +83,13 @@ def calc_doublet_score(
         distance_thresh,
 ):
 
-    transcript_coordinates_df = sdata.points[key_transcripts].compute()
+    # ovrlpy reads only the coordinates and the gene label: compute_VSI selects
+    # ['gene', 'x_pixel', 'y_pixel', 'z', 'z_center'] and _sample_expression selects the
+    # coordinate columns plus 'gene'. Loading all 13 columns of the points table cost
+    # 65.6 GB in pandas (measured, 674,599,124 rows) for 9 columns nothing here reads.
+    transcript_coordinates_df = helperfuncs.load_transcripts(
+        sdata, key_transcripts, ['x', 'y', 'z', 'feature_name']
+    )
     transcript_coordinates_df = transcript_coordinates_df.rename(columns={'feature_name': 'gene'})
 
     # ovrlpy does a werid thing to overwrite the coordinates and set the origin to 0.0.
@@ -103,18 +136,11 @@ def calc_doublet_score(
     plt.savefig(f'{figure_path}/scatter_signal_integrity.pdf')
     plt.close()
 
-    transcripts_processed = ovrlp.transcripts.to_pandas()
     fig = plt.figure(figsize=(10, 10))
     ax = plt.subplot(111, projection="3d")
-    for i in range(-2, 3):
-        subset = transcripts_processed[
-            (transcripts_processed['z'] - transcripts_processed['z_center']).between(i, i + 1)
-        ]
-        # downsample the number of transcripts
-        subset = subset[::100]
-
+    per_layer, ratio = downsample_transcript_layers(ovrlp.transcripts)
+    for i, subset in per_layer:
         ax.scatter(subset["x"], subset["y"], i, s=1, alpha=0.1)
-    ratio = transcripts_processed["x"].max() / transcripts_processed["y"].max()
     ax.set_box_aspect([ratio, 1, 0.75])
     ax.set_xlabel("x")
     ax.set_ylabel("y")
@@ -219,8 +245,16 @@ def calc_doublet_score(
     sdata['table'].obs['wdoublet'] = np.array(cell_dobulet_df['wdoublet'])
     sdata['table'].obs['doublet_distance'] = np.array(cell_dobulet_df['doublet_distance'])
 
-    # Have to call this again because overlpy corrects also the transcript coordinates
-    transcript_coordinates_df = sdata.points[key_transcripts].compute()
+    # Have to call this again because overlpy corrects also the transcript coordinates.
+    # The reload is therefore required, not redundant -- but only x, y and the index are
+    # consumed below, so project to two columns instead of materialising all eight.
+    # ovrlpy rewrote the coordinates in place, so the cached copy is now stale: drop it
+    # and reload. This is the one reload the single-load policy still requires, and
+    # making it explicit is the point -- only x, y and the index are consumed here.
+    helperfuncs.release_transcripts(key_transcripts)
+    transcript_coordinates_df = helperfuncs.load_transcripts(
+        sdata, key_transcripts, ['x', 'y']
+    )
 
     # Detect transcript that might belong to doublets
     transcript_doublet = flag_transcripts_near_doublets(

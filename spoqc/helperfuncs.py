@@ -708,6 +708,82 @@ def plot_scatter_density(adata: AnnData, figure_path: str, suffix: str,
     plt.close()
 
 
+
+# ---------------------------------------------------------------------------------------
+# Single-load policy for the transcript table
+# ---------------------------------------------------------------------------------------
+# The transcript table is the largest object in the pipeline: 42.6M rows x 8 columns on a
+# full Xenium sample. Materialising it costs ~6 s and ~8.7 GB of RSS, and it used to be
+# .compute()'d independently at ten call sites, which is what drove a 39 GB peak.
+#
+# Policy: load each piece of data ONCE, run every computation that needs it, then release
+# it. Nothing large stays resident past the phase that needs it.
+#
+# load_transcripts() materialises the table at most once per key and serves every later
+# caller from that single copy. Callers get their own frame for the columns they asked
+# for, so one consumer adding a column (several do) cannot corrupt another's view.
+# release_transcripts() drops the cached copy; call it when the transcript-consuming
+# phase is done.
+#
+# The cache is also the mechanism that makes a *legitimate* reload explicit: ovrlpy
+# rewrites the transcript coordinates in place, so calc_doublet_score releases the cache
+# after running it and the next load picks up the corrected coordinates.
+
+_TRANSCRIPT_CACHE: dict = {}
+
+
+def load_transcripts(sdata, key: str = 'transcripts', columns=None) -> pd.DataFrame:
+    """Materialise the transcript table at most once, then serve from that copy.
+
+    Args:
+        sdata: the SpatialData object.
+        key: points key holding the transcripts.
+        columns: columns to return. None returns every column.
+
+    Returns:
+        A DataFrame the caller owns and may mutate freely. The index always matches the
+        full table's index, so assignments aligned on it behave as before.
+    """
+    wanted = None if columns is None else tuple(columns)
+
+    # Serve from any cached frame that already covers the request, so the
+    # materialise-at-most-once guarantee holds: once a wider (or full) frame is resident a
+    # narrower caller slices it rather than triggering a second read, and it keeps seeing
+    # that copy until release_transcripts() -- which is what ovrlpy's in-place coordinate
+    # rewrite depends on.
+    if wanted is not None:
+        for (cached_key, cached_columns), frame in _TRANSCRIPT_CACHE.items():
+            if cached_key != key:
+                continue
+            if cached_columns is None or set(wanted) <= set(cached_columns):
+                return frame.loc[:, list(wanted)].copy()
+
+    # Project in the dask layer BEFORE materialising. `sdata[key]` is a dask DataFrame, so
+    # selecting columns first means the unwanted ones are never built. Measured on
+    # 674,599,124 transcripts: the full 13-column table is 65.6 GB in pandas and takes
+    # RssAnon from 2.20 to 90.44 GB, where the four columns ovrlpy reads are 14.8 GB and
+    # reach 38.59 GB. Slicing after `.compute()` -- as this used to -- pays the full cost
+    # and then copies on top.
+    cache_key = (key, wanted)
+    if cache_key not in _TRANSCRIPT_CACHE:
+        source = sdata[key]
+        if wanted is not None:
+            source = source[list(wanted)]
+        _TRANSCRIPT_CACHE[cache_key] = source.compute()
+    return _TRANSCRIPT_CACHE[cache_key].copy()
+
+
+def release_transcripts(key: str = None) -> None:
+    """Drop the cached transcript table so its memory goes back to the OS."""
+    if key is None:
+        _TRANSCRIPT_CACHE.clear()
+    else:
+        # cache keys are (key, columns) pairs, so drop every column-set for this key
+        for cache_key in [k for k in _TRANSCRIPT_CACHE if k[0] == key]:
+            _TRANSCRIPT_CACHE.pop(cache_key, None)
+    gc.collect()
+
+
 def plot_scatter_density_df(df: pd.DataFrame, figure_path: str, suffix: str,
                          scattercat: Optional[str], densitycat: Optional[str],
                          palette: Union[str, dict, None], title: Optional[str],
