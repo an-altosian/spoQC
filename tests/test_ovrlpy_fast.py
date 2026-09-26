@@ -1,85 +1,26 @@
-"""The ovrlpy embedding shim must match ovrlpy's own implementation.
+"""`install()` must patch exactly what it claims, and only on a version it was written for.
 
-Differential test: build synthetic patches, run ovrlpy's `_calculate_embedding` and the
-shim on identical input, and compare. The shim only changes how the per-gene rank-1
-updates are accumulated (in-place BLAS `ger` instead of a temporary per gene), so results
-must agree to floating-point noise and the `0` sentinel behaviour must be preserved.
+The equivalence of the replacements themselves is covered elsewhere:
+`test_ovrlpy_sparse.py` for the accumulation, `test_ovrlpy_parallel_vsi.py` and
+`test_ovrlpy_parallel_sampling.py` for the two patch loops. This file is only about the
+binding.
 """
 from __future__ import annotations
 
-from queue import SimpleQueue
-
-import numpy as np
-import polars as pl
 import pytest
 
 ovrlpy = pytest.importorskip("ovrlpy")
-from ovrlpy._utils import _calculate_embedding as ovrlpy_original  # noqa: E402
 
-from spoqc._ovrlpy_fast import (  # noqa: E402
-    SUPPORTED_OVRLPY_VERSIONS,
-    _calculate_embedding_fast,
-    install,
-)
-
-
-def _patch(n_genes, side, n_components, seed=0):
-    rng = np.random.default_rng(seed)
-    mask = rng.random((side, side)) > 0.3
-    components = rng.standard_normal((n_components, n_genes))  # float64, like PCA
-    items = []
-    for gene in range(n_genes):
-        n = int(rng.integers(2, 120))
-        items.append((gene, pl.DataFrame({
-            "x_pixel": rng.integers(0, side, n),
-            "y_pixel": rng.integers(0, side, n),
-            "z": rng.random(n),
-            "z_center": np.full(n, 0.5),
-        })))
-    return mask, components, items
-
-
-def _run(fn, mask, components, items):
-    queue = SimpleQueue()
-    for item in items:
-        queue.put(item)
-    return fn(queue, mask, components, bandwidth=1.0, dtype=np.float32)
-
-
-@pytest.mark.parametrize("n_genes,side,n_components", [(40, 60, 21), (120, 90, 30)])
-def test_matches_ovrlpy(n_genes, side, n_components):
-    mask, components, items = _patch(n_genes, side, n_components)
-    expected_top, expected_bottom = _run(ovrlpy_original, mask, components, items)
-    got_top, got_bottom = _run(_calculate_embedding_fast, mask, components, items)
-
-    for expected, got in ((expected_top, got_top), (expected_bottom, got_bottom)):
-        assert expected.shape == got.shape
-        assert np.allclose(expected, got, rtol=1e-10, atol=1e-10), (
-            f"max abs diff {np.abs(expected - got).max():.3e}"
-        )
-
-
-def test_empty_queue_returns_the_zero_sentinel():
-    """ovrlpy's caller does `isinstance(embedding, int) and embedding == 0`."""
-    mask, components, _ = _patch(1, 10, 4)
-    assert _run(_calculate_embedding_fast, mask, components, []) == (0, 0)
-    assert _run(ovrlpy_original, mask, components, []) == (0, 0)
-
-
-def test_genes_with_fewer_than_two_transcripts_are_skipped():
-    """ovrlpy's _gene_embedding returns (None, None) for len(df) < 2."""
-    mask, components, _ = _patch(2, 20, 4)
-    single = pl.DataFrame({"x_pixel": [1], "y_pixel": [1], "z": [0.9], "z_center": [0.5]})
-    assert _run(_calculate_embedding_fast, mask, components, [(0, single)]) == (0, 0)
+from spoqc._ovrlpy_fast import SUPPORTED_OVRLPY_VERSIONS, install  # noqa: E402
 
 
 def test_install_is_version_guarded():
     """install() binds the nonzero-only accumulation and BOTH process-parallel loops.
 
-    It binds `_calculate_embedding_sparse`, not the rank-1 `_calculate_embedding_fast`:
-    the accumulation is bound by DRAM traffic over a ~60 MB accumulator rather than by
-    arithmetic, so skipping exact-zero rows beats making the arithmetic cheaper
-    (measured 31.18 s vs 45.43 s on a production-regime fixture).
+    It binds `_calculate_embedding_sparse` and nothing else: a BLAS rank-1 accumulation
+    was built and measured at 45.43 s against sparse's 31.18 s on a production-regime
+    fixture, because the accumulation is bound by DRAM traffic over a ~60 MB accumulator
+    rather than by arithmetic. It is not kept in the module.
     """
     from spoqc._ovrlpy_fast import (
         _calculate_embedding_sparse,
@@ -95,3 +36,11 @@ def test_install_is_version_guarded():
         assert _ovrlp._calculate_embedding is _calculate_embedding_sparse
         assert _ovrlp.Ovrlp.compute_VSI is compute_VSI_parallel
         assert _kde._sample_expression is _sample_expression_parallel
+
+
+def test_rejected_variants_are_not_shipped():
+    """Minimum change: a measured-and-rejected alternative is not carried as dead code."""
+    import spoqc._ovrlpy_fast as fast
+
+    for name in ("_calculate_embedding_fast", "_calculate_embedding_batched"):
+        assert not hasattr(fast, name), f"{name} lost on measurement and must not ship"
