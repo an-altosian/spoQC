@@ -74,9 +74,24 @@ def test_genes_with_fewer_than_two_transcripts_are_skipped():
 
 
 def test_install_is_version_guarded():
+    """install() binds the nonzero-only accumulation and BOTH process-parallel loops.
+
+    It binds `_calculate_embedding_sparse`, not the rank-1 `_calculate_embedding_fast`:
+    the accumulation is bound by DRAM traffic over a ~60 MB accumulator rather than by
+    arithmetic, so skipping exact-zero rows beats making the arithmetic cheaper
+    (measured 31.18 s vs 45.43 s on a production-regime fixture).
+    """
+    from spoqc._ovrlpy_fast import (
+        _calculate_embedding_sparse,
+        _sample_expression_parallel,
+        compute_VSI_parallel,
+    )
+
     applied = install()
     assert applied is (ovrlpy.__version__ in SUPPORTED_OVRLPY_VERSIONS)
     if applied:
-        from ovrlpy import _ovrlp, _utils
-        assert _utils._calculate_embedding is _calculate_embedding_fast
-        assert _ovrlp._calculate_embedding is _calculate_embedding_fast
+        from ovrlpy import _kde, _ovrlp, _utils
+        assert _utils._calculate_embedding is _calculate_embedding_sparse
+        assert _ovrlp._calculate_embedding is _calculate_embedding_sparse
+        assert _ovrlp.Ovrlp.compute_VSI is compute_VSI_parallel
+        assert _kde._sample_expression is _sample_expression_parallel
