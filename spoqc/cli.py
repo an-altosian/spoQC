@@ -332,29 +332,40 @@ def main(argv: list[str] | None = None) -> None:
             return args['staining']
         @constant
         def PIXEL_QC_CHUNK_SIZE():
-            # An explicit flag wins; otherwise size the chunk to the memory budget.
+            # An explicit flag wins. Without --mem, the original fixed default is
+            # returned verbatim, so a run that does not ask for a budget is
+            # unchanged. With --mem the budget may only LOWER it.
             # A pixel-QC row carries roughly a dozen float64 columns plus index
             # overhead, so ~200 B/row is the working figure.
             if args['pixel_qc_chunk_size'] is not None:
                 return args['pixel_qc_chunk_size']
-            return memory.derive_chunk_size(
-                memory.budget_bytes(args['mem']), bytes_per_row=200
+            if args['mem'] is None:
+                return memory.DEFAULT_PIXEL_QC_CHUNK_SIZE
+            return min(
+                memory.DEFAULT_PIXEL_QC_CHUNK_SIZE,
+                memory.derive_chunk_size(
+                    memory.budget_bytes(args['mem']), bytes_per_row=200
+                ),
             )
         @constant
         def KMEANS_SAMPLE_SIZE():
-            # An explicit flag wins; otherwise cap the fitting subsample so the
-            # densified sample cannot itself blow the budget. The sample is
-            # n_pixels x n_features float64.
+            # An explicit flag wins. Without --mem, the original fixed default.
+            # With --mem, cap the fitting subsample so the densified sample cannot
+            # itself blow the budget; the sample is n_pixels x n_features float64.
             if args['kmeans_sample_size'] is not None:
                 return args['kmeans_sample_size']
+            if args['mem'] is None:
+                return memory.DEFAULT_KMEANS_SAMPLE_SIZE
             budget = memory.budget_bytes(args['mem'])
-            return max(100_000, min(5_000_000,
+            return max(100_000, min(memory.DEFAULT_KMEANS_SAMPLE_SIZE,
                        int(budget * memory.ALLOCATION_HEADROOM / (8 * 16))))
         @constant
         def MAX_WORKERS():
             # Process fan-out multiplies memory by the worker count, so cap -n by
             # what the budget can hold. Measured per-worker peak for the leiden
             # sweep was ~2.8 GB at 8k cells; 3 GB is the conservative figure.
+            if args['mem'] is None:
+                return int(args['threads'])
             return memory.derive_max_workers(
                 memory.budget_bytes(args['mem']),
                 per_worker_bytes=3 * 10**9,
@@ -412,10 +423,15 @@ def main(argv: list[str] | None = None) -> None:
     # Peak RSS is set by the chunk/subsample/worker knobs below; derive them from the
     # budget instead of using fixed defaults, then sample the real process-group RSS
     # against it so an overrun fails here, loudly, instead of being OOM-killed.
-    _mem_budget = CONST.MEM_BUDGET
-    print(f"[NOTE] Memory budget: {memory.format_gb(_mem_budget)}"
-          + ("" if args['mem'] is not None else " (80% of available; set --mem to pin it)"))
-    _mem_watchdog = memory.Watchdog(_mem_budget).start()
+    # The watchdog signals the process group on breach, so it only runs when a
+    # budget was actually asked for. Arming it off an implicit "80% of whatever
+    # is free right now" would add a new failure mode to every existing run, and
+    # a nondeterministic one on a shared host.
+    _mem_watchdog = None
+    if args['mem'] is not None:
+        _mem_budget = CONST.MEM_BUDGET
+        print(f"[NOTE] Memory budget: {memory.format_gb(_mem_budget)}")
+        _mem_watchdog = memory.Watchdog(_mem_budget).start()
     # Timer
     timer = helperfuncs.Timer()
 

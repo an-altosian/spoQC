@@ -38,6 +38,13 @@ DEFAULT_FRACTION = 0.8
 #: room for the interpreter, BLAS scratch, GEOS, and the figure pipeline.
 ALLOCATION_HEADROOM = 0.25
 
+#: The fixed defaults spoQC used before --mem existed. Without --mem these are
+#: returned verbatim, so a run that does not ask for a budget is unchanged. With
+#: --mem they are the CEILING: a budget may only ever tighten a tunable, never
+#: raise it, or "budget" would mean "permission to use more".
+DEFAULT_PIXEL_QC_CHUNK_SIZE = 200_000
+DEFAULT_KMEANS_SAMPLE_SIZE = 5_000_000
+
 _PAGE_SIZE = os.sysconf("SC_PAGE_SIZE")
 
 

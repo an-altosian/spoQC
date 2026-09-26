@@ -278,3 +278,71 @@ def _hog(megabytes, hold_seconds):
     buf = bytearray(megabytes * 1024 * 1024)
     buf[::4096] = b"x" * len(buf[::4096])
     time.sleep(hold_seconds)
+
+
+class TestWithoutMemNothingChanges:
+    """--mem is opt-in: an invocation that does not pass it must behave as dev.
+
+    dev had fixed defaults of 200_000 and 5_000_000 and no watchdog at all. This
+    PR changed the argparse defaults to None so that "explicit" is
+    distinguishable from "derived", which made it possible to silently derive a
+    value for runs that never asked for a budget. These tests pin that it does
+    not.
+    """
+
+    ARGV = ["-i", "i", "-o", "o", "-t", "t"]
+
+    def _const(self, argv):
+        """Build the CONST object the way main() does, without running main()."""
+        from spoqc import cli
+
+        parser = cli.build_parser()
+        return vars(parser.parse_args(argv))
+
+    def test_mem_defaults_to_none(self):
+        assert self._const(self.ARGV)["mem"] is None
+
+    def test_tunable_flags_default_to_none_so_explicit_is_distinguishable(self):
+        args = self._const(self.ARGV)
+        assert args["pixel_qc_chunk_size"] is None
+        assert args["kmeans_sample_size"] is None
+
+    def test_the_original_fixed_defaults_are_recorded(self):
+        """These are the values dev used; they are the fallback and the ceiling."""
+        from spoqc import memory
+
+        assert memory.DEFAULT_PIXEL_QC_CHUNK_SIZE == 200_000
+        assert memory.DEFAULT_KMEANS_SAMPLE_SIZE == 5_000_000
+
+    def test_derivation_only_ever_lowers_the_chunk_size(self):
+        """A budget must not be read as permission to use more than dev did."""
+        from spoqc import memory
+
+        huge = memory.budget_bytes(10_000.0)  # 10 TB
+        derived = memory.derive_chunk_size(huge, bytes_per_row=200)
+        assert derived > memory.DEFAULT_PIXEL_QC_CHUNK_SIZE, (
+            "the raw derivation exceeds the default, so the min() is load-bearing"
+        )
+        assert min(memory.DEFAULT_PIXEL_QC_CHUNK_SIZE, derived) == 200_000
+
+    def test_the_watchdog_is_only_armed_with_an_explicit_budget(self):
+        import inspect
+
+        from spoqc import cli
+
+        src = inspect.getsource(cli)
+        i = src.index("memory.Watchdog(")
+        window = src[max(0, i - 400):i]
+        assert "if args['mem'] is not None:" in window, (
+            "the watchdog must be guarded by an explicit --mem"
+        )
+
+    def test_max_workers_is_uncapped_without_a_budget(self):
+        import inspect
+
+        from spoqc import cli
+
+        src = inspect.getsource(cli)
+        body = src[src.index("def MAX_WORKERS():"):].split("@constant")[0]
+        assert "if args['mem'] is None:" in body
+        assert "return int(args['threads'])" in body
