@@ -729,12 +729,11 @@ def plot_scatter_density(adata: AnnData, figure_path: str, suffix: str,
 _FIG_QUEUE: list = []
 _FIG_POOL = None
 
-# Budget: this runs under a hard limit of 30 CPUs and 250 GB peak RAM.
-#
-# The worker count STACKS on top of the pipeline's own parallelism: `-n` sets a library's
-# n_workers, numba's thread count and BLOSC_NTHREADS, so `-n 16` plus a 16-worker figure
-# pool oversubscribes 30 CPUs. Default to 8 and leave headroom; override with
-# SPOQC_FIG_WORKERS when the pipeline is run with a smaller -n.
+# The figure pool's worker count STACKS on top of the pipeline's own parallelism: `-n`
+# already sets library n_workers, numba's thread count and BLOSC_NTHREADS, so a figure
+# pool as wide as `-n` oversubscribes the machine. The default is deliberately modest
+# and capped by os.cpu_count(); raise it with SPOQC_FIG_WORKERS when spoQC is run with
+# a small `-n`, or lower it on a shared host.
 #
 # The flush bound caps parent memory: figures pickle to ~7 MB each, so 32 queued is ~224 MB,
 # whereas queueing a run's ~1250 figures would hold ~9 GB.
