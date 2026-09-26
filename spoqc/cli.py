@@ -143,21 +143,6 @@ def build_parser() -> argparse.ArgumentParser:
         required=False
     )
     parser.add_argument(
-        "--resolution",
-        dest="resolution",
-        type=str,
-        default="scale0",
-        help="Multiscale pyramid level of the morphology image used for all pixel-level "
-             "work. Defaults to scale0, the native full resolution, which is what spoQC "
-             "has always used -- this flag does not change any default behaviour. Each "
-             "further level halves both axes, so scale1 has 4x, scale2 16x and scale3 "
-             "64x fewer pixels; runtime and peak memory of every pixel-scaled stage are "
-             "roughly proportional to the pixel count. Selecting a coarser level changes "
-             "the output masks and every pixel-level metric derived from them, so it is "
-             "an explicit opt-in, not a tuning knob applied on your behalf.",
-        required=False
-    )
-    parser.add_argument(
         "--pixel_qc_chunk_size",
         dest="pixel_qc_chunk_size",
         type=int,
@@ -322,7 +307,7 @@ def main(argv: list[str] | None = None) -> None:
             return 'morphology_focus'
         @constant
         def RESOLUTION():
-            return args['resolution']
+            return 'scale0'
         @constant
         def STAINING():
             return args['staining']
