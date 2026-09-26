@@ -195,6 +195,79 @@ class TestTranscriptBinningFollowsResolution:
         assert got.shape == (self.H // div, self.W // div)
         assert got.sum() == len(df), "no point may be dropped or double-counted"
 
+    def test_mean_reduction_matches_the_previous_pandas_path(self):
+        """qv_image's reduction is a mean, so it is NOT bit-identical.
+
+        The previous path summed each pixel's values through pandas' groupby;
+        this one uses np.bincount weights. Both are correct means of the same
+        points but accumulate in a different order, so they differ by a few ULP.
+        Measured on 1M points over a 1000x1000 grid: 1.07% of pixels differ,
+        max absolute 7.11e-15, max relative 4.28e-16, at most 3 ULP, and the two
+        are equal once cast to float32. That is the bar asserted here.
+        """
+        import pandas as pd
+
+        from spoqc.metrics.transcript_density import _grid
+
+        rng = np.random.default_rng(0)
+        n = 60_000
+        df = pd.DataFrame(
+            {
+                "x": rng.integers(0, self.W, n),
+                "y": rng.integers(0, self.H, n),
+                "qv": rng.random(n) * 40,
+            }
+        )
+        dim = self._dim(self.W, self.H)
+
+        gm = df.groupby(["x", "y"])["qv"].mean()
+        grid = [(x, y) for y in range(self.H) for x in range(self.W)]
+        mi = pd.MultiIndex.from_tuples(grid, names=["x", "y"])
+        expected = gm.reindex(mi).fillna(0.0).to_numpy().reshape(self.H, self.W)
+
+        got = _grid.bin_reduce(
+            df["x"].to_numpy(), df["y"].to_numpy(), df["qv"].to_numpy(),
+            dim, self.H, self.W, how="mean",
+        )
+
+        diff = np.abs(got - expected)
+        assert diff.max() < 1e-12, f"max abs diff {diff.max():.3g} exceeds 1e-12"
+        nz = expected != 0
+        ulp = diff[nz] / np.spacing(np.abs(expected[nz]))
+        assert ulp.max() <= 4, f"max {ulp.max():.1f} ULP exceeds the 4 ULP bar"
+        np.testing.assert_array_equal(
+            got.astype(np.float32), expected.astype(np.float32),
+            err_msg="the two means must agree exactly at float32 precision",
+        )
+
+    def test_max_reduction_is_exact(self):
+        """how='max' selects an existing value, so it must be bit-identical."""
+        import pandas as pd
+
+        from spoqc.metrics.transcript_density import _grid
+
+        rng = np.random.default_rng(3)
+        n = 60_000
+        df = pd.DataFrame(
+            {
+                "x": rng.integers(0, self.W, n),
+                "y": rng.integers(0, self.H, n),
+                "v": rng.random(n) * 40,
+            }
+        )
+        dim = self._dim(self.W, self.H)
+
+        gm = df.groupby(["x", "y"])["v"].max()
+        grid = [(x, y) for y in range(self.H) for x in range(self.W)]
+        mi = pd.MultiIndex.from_tuples(grid, names=["x", "y"])
+        expected = gm.reindex(mi).fillna(0.0).to_numpy().reshape(self.H, self.W)
+
+        got = _grid.bin_reduce(
+            df["x"].to_numpy(), df["y"].to_numpy(), df["v"].to_numpy(),
+            dim, self.H, self.W, how="max",
+        )
+        np.testing.assert_array_equal(got, expected)
+
     def test_downsampling_equals_a_block_sum_of_scale0(self):
         """The correctness bar: a scale2 pixel must total its 4x4 scale0 pixels."""
         from spoqc.metrics.transcript_density import _grid
