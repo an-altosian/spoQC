@@ -1,9 +1,10 @@
 """PR1: the morphology-image pyramid level must be selectable, and the raster
 transform must follow it.
 
-Before this change `RESOLUTION` returned the literal 'scale0', so every
-pixel-scaled stage ran at native resolution regardless of how small the input
-was -- subsetting cells or transcripts does not crop the image.
+`RESOLUTION` returned the literal 'scale0'. The level is now selectable, and
+scale0 remains the default so no existing invocation changes. The raster
+transform and the transcript binning both hardcoded assumptions that only hold
+at scale0, which is what made the level unselectable in practice.
 """
 import numpy as np
 import pytest
@@ -13,21 +14,28 @@ from shapely.geometry import box
 
 
 class TestResolutionFlag:
-    def test_default_is_scale2(self):
+    def test_default_preserves_dev_behaviour(self):
+        """The flag must not change what an existing invocation computes.
+
+        `dev` hardcoded RESOLUTION to 'scale0', so that is the only default this
+        flag may have. A coarser default would silently change every pixel-level
+        metric and output mask.
+        """
         from spoqc.cli import build_parser
 
         args = vars(build_parser().parse_args(["-i", "i", "-o", "o", "-t", "t"]))
-        assert args["resolution"] == "scale2"
+        assert args["resolution"] == "scale0"
 
-    def test_scale0_still_selectable(self):
+    @pytest.mark.parametrize("level", ["scale1", "scale2", "scale3", "scale4"])
+    def test_coarser_levels_are_selectable(self, level):
         from spoqc.cli import build_parser
 
         args = vars(
             build_parser().parse_args(
-                ["-i", "i", "-o", "o", "-t", "t", "--resolution", "scale0"]
+                ["-i", "i", "-o", "o", "-t", "t", "--resolution", level]
             )
         )
-        assert args["resolution"] == "scale0"
+        assert args["resolution"] == level
 
     def test_resolution_constant_reads_args(self):
         import inspect

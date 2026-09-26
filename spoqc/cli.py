@@ -146,14 +146,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--resolution",
         dest="resolution",
         type=str,
-        default="scale2",
+        default="scale0",
         help="Multiscale pyramid level of the morphology image used for all pixel-level "
-             "work. scale0 is native full resolution; each further level halves both "
-             "axes, so scale2 has 16x and scale3 64x fewer pixels. Runtime and peak "
-             "memory of every pixel-scaled stage are proportional to this. The "
-             "probability fields being smoothed are piecewise-constant over whole cells "
-             "or over a 100-cluster k-means, so scale0 carries no additional information "
-             "for them; select it only when you need native-resolution output masks.",
+             "work. Defaults to scale0, the native full resolution, which is what spoQC "
+             "has always used -- this flag does not change any default behaviour. Each "
+             "further level halves both axes, so scale1 has 4x, scale2 16x and scale3 "
+             "64x fewer pixels; runtime and peak memory of every pixel-scaled stage are "
+             "roughly proportional to the pixel count. Selecting a coarser level changes "
+             "the output masks and every pixel-level metric derived from them, so it is "
+             "an explicit opt-in, not a tuning knob applied on your behalf.",
         required=False
     )
     parser.add_argument(
