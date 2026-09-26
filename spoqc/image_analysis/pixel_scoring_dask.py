@@ -100,7 +100,7 @@ def start_pixel_qc(
             sys.exit(f"[ERROR] File {metric_file} is missing")
 
     print('[NOTE] Agglomerate pixel metrices and cluster')
-    num_values_image = len(sdata[image_type][resolution].image.values[0].flatten())
+    num_values_image = int(np.prod(sdata[image_type][resolution].image.shape[-2:]))
     empty_clusters = da.zeros(num_values_image, chunks=chunk_size)
     image_ddf = dd.from_dask_array(empty_clusters, columns=['cluster'])
     timer.start()
