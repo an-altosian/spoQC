@@ -197,9 +197,13 @@ def run_qc_model(sdata, figure_path, CONST):
     for i in range(0, npcs):
         df[f'PC{i}'] = X_pca[:,i]
 
+    # scanpy writes these through matplotlib savefig, which is deferred to a process
+    # pool, so the file must be forced to disk before it can be moved.
     sc.pl.pca_variance_ratio(rna_adata, n_pcs=n_comps, log=True, save='.png')
+    helperfuncs.ensure_written("figures/pca_variance_ratio.png")
     shutil.move("figures/pca_variance_ratio.png", f"{figure_path}/pca_variance_ratio.png")
     sc.pl.pca_variance_ratio(rna_adata, n_pcs=n_comps, log=True, save='.pdf')
+    helperfuncs.ensure_written("figures/pca_variance_ratio.pdf")
     shutil.move("figures/pca_variance_ratio.pdf", f"{figure_path}/pca_variance_ratio.pdf")
 
     plot_pca_scatter(df, figure_path, npcs)

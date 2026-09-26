@@ -54,7 +54,10 @@ def measure_stripe_thickness_and_black_area(image_path: str,
         if upper_bound_background[i] > 255:
             upper_bound_background[i] = 255
 
-    # Read the image
+    # Read the image.
+    # Figure writes are deferred to a process pool, and this path was produced by
+    # generate_input() earlier in the same stage, so it may still be queued.
+    helperfuncs.ensure_written(image_path)
     image = cv2.imread(image_path)
     # Turn background color to white
     mask = cv2.inRange(image, lower_bound_background, upper_bound_background)
