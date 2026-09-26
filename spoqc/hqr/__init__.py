@@ -4,7 +4,9 @@ from . import markov_random_field_zarr_parallel
 from . import graphcut
 
 #: Which solver the MRF call sites use. Set once from the CLI (--mrf_solver).
-SOLVER = "graphcut"
+#: Defaults to the solver spoQC has always used, so importing this package does
+#: not change any result; "graphcut" is opt-in.
+SOLVER = "lbp"
 
 _SOLVERS = {
     "graphcut": graphcut,

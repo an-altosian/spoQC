@@ -131,15 +131,22 @@ class TestDropInContract:
 
 
 class TestSolverSelection:
-    def test_default_is_graphcut(self):
+    def test_default_preserves_dev_behaviour(self):
+        """The default solver must stay the one spoQC has always used.
+
+        graphcut minimises the same energy exactly, but it assigns a different
+        label to 1-2% of pixels, so making it the default would silently change
+        every quality mask. It is opt-in.
+        """
         from spoqc import hqr
 
-        assert hqr.solver().__name__.endswith("graphcut")
+        assert hqr.SOLVER == "lbp"
+        assert hqr.solver().__name__.endswith("markov_random_field_zarr_parallel")
 
-    def test_lbp_remains_selectable(self):
+    def test_graphcut_is_selectable(self):
         from spoqc import hqr
 
-        assert hqr.solver("lbp").__name__.endswith("markov_random_field_zarr_parallel")
+        assert hqr.solver("graphcut").__name__.endswith("graphcut")
 
     def test_unknown_solver_raises(self):
         from spoqc import hqr
@@ -151,7 +158,7 @@ class TestSolverSelection:
         from spoqc.cli import build_parser
 
         args = vars(build_parser().parse_args(["-i", "i", "-o", "o", "-t", "t"]))
-        assert args["mrf_solver"] == "graphcut"
+        assert args["mrf_solver"] == "lbp"
         with pytest.raises(SystemExit):
             build_parser().parse_args(
                 ["-i", "i", "-o", "o", "-t", "t", "--mrf_solver", "bogus"]

@@ -147,13 +147,16 @@ def build_parser() -> argparse.ArgumentParser:
         dest="mrf_solver",
         type=str,
         choices=["graphcut", "lbp"],
-        default="graphcut",
+        default="lbp",
         help="Solver for the binary Markov random field that smooths the pixel and "
-             "cell quality maps. 'graphcut' finds the exact global minimum of that "
-             "energy with a single s-t min cut; 'lbp' is the previous iterative loopy "
-             "belief propagation, which approximates the same minimum, always runs its "
-             "full iteration count, and needs a 32 bytes/pixel message file on disk. "
-             "Use 'lbp' only to reproduce earlier results.",
+             "cell quality maps. Defaults to 'lbp', the iterative loopy belief "
+             "propagation spoQC has always used -- this flag does not change any "
+             "default behaviour. 'graphcut' finds the exact global minimum of the same "
+             "energy with a single s-t min cut: faster, no message file on disk, and a "
+             "strictly lower energy, but it assigns a different label to 1-2%% of "
+             "pixels and it holds the whole graph in RAM (~260 B/node, so ~240 GB at "
+             "the default scale0 resolution). It is therefore opt-in, and practical "
+             "only together with a coarser --resolution.",
         required=False
     )
     parser.add_argument(
