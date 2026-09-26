@@ -131,7 +131,7 @@ def transcriptqc(sdata, figure_path, annotation_file, key_transcripts):
     fig.write_image(f"{figure_path}/transctipt_type_pie.png", scale=3)
     fig.write_image(f"{figure_path}/transctipt_type_pie.pdf", scale=3)
 
-    df = sdata[key_transcripts].compute()
+    df = helperfuncs.load_transcripts(sdata, key_transcripts)
 
     df['location'] = location_list
     df['feature_type'] = rna_types_sdata
@@ -164,7 +164,11 @@ def negativeprobeqc(sdata: Any, figure_path: str, key_transcripts: str) -> None:
         None: Saves the generated plot as a PNG file in the specified path.
     """
 
-    df = sdata[key_transcripts].compute()
+    # feature_name is matched below; x and y are needed because the frame is handed to
+    # plot_scatter_density_df, which reads df['x'], df['y'] and the density column. That
+    # is three of the transcript table's eight columns, so project rather than
+    # materialising all 42.6M x 8 values (~8 GB of RSS).
+    df = helperfuncs.load_transcripts(sdata, key_transcripts, ['x', 'y', 'feature_name'])
 
     match_neg_probes = [bool(re.compile('NegControlCodeword').match(x)) for x in list(df['feature_name'])]
 

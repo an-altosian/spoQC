@@ -711,6 +711,11 @@ def main(argv: list[str] | None = None) -> None:
         subworkflows.qc_transcript.negativeprobeqc(sdata, figure_path, 'transcripts')
         print("[finish]")
 
+    # Transcript QC is the last consumer of the transcript table: cellcycle QC, the
+    # additional analyses and reporting never touch it. Drop the single cached copy here
+    # so ~2.7 GB goes back to the OS before the figure-heavy tail of the run.
+    helperfuncs.release_transcripts()
+
     # In[]
     ##########################
     ###### CELLCYCLE QC ######
