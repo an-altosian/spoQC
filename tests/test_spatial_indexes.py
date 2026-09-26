@@ -1,25 +1,18 @@
-"""PR4: two O(n^2) neighbour searches replaced by spatial indexes.
+"""PR4: helperfuncs.points_within_radius, an O(n^2) neighbour search, replaced
+by a spatial index.
 
-Both tests are *differential*: the previous implementations are reproduced
-verbatim below and the new code must agree with them exactly, including index
-labels, per-cell ordering, and the self-exclusion rule.
+The test is *differential*: the previous implementation is reproduced verbatim
+below and the new code must agree with it exactly, including index labels,
+per-point ordering, and the self-exclusion rule.
+
+find_overlapping_nuclei was also in this PR; #8 owns it now.
 """
-import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pytest
-from shapely.geometry import Point, box
 
 
 # --------------------------- the previous implementations ---------------------
-def _orig_find_overlapping_nuclei(cells, nucleus):
-    overlaps = []
-    centroids = nucleus.geometry.centroid
-    for cell in cells.geometry:
-        overlaps.append(nucleus[centroids.geometry.intersects(cell)].index.tolist())
-    return overlaps
-
-
 def _orig_points_within_radius(df, radius, num):
     out = []
     for i, point in df.iterrows():
@@ -32,66 +25,6 @@ def _orig_points_within_radius(df, radius, num):
 
 
 # --------------------------------- fixtures -----------------------------------
-@pytest.fixture
-def overlapping_geoms():
-    """Cells with 0, 1 and several nuclei, plus an unclaimed nucleus."""
-    cells = gpd.GeoDataFrame(
-        geometry=[
-            box(0, 0, 10, 10),      # contains nuclei 0 and 1
-            box(20, 20, 30, 30),    # contains nucleus 2
-            box(50, 50, 60, 60),    # contains none
-        ],
-        index=[100, 200, 300],
-    )
-    nucleus = gpd.GeoDataFrame(
-        geometry=[Point(2, 2), Point(8, 8), Point(25, 25), Point(99, 99)],
-        index=["n0", "n1", "n2", "n3"],
-    )
-    return cells, nucleus
-
-
-class TestFindOverlappingNuclei:
-    def test_matches_previous_implementation(self, overlapping_geoms):
-        from spoqc.metrics.segmentation.convexity import find_overlapping_nuclei
-
-        cells, nucleus = overlapping_geoms
-        assert find_overlapping_nuclei(cells, nucleus) == _orig_find_overlapping_nuclei(
-            cells, nucleus
-        )
-
-    def test_returns_index_labels_not_positions(self, overlapping_geoms):
-        """Callers do nucleus_boundaries['geometry'].loc[idx], so labels matter."""
-        from spoqc.metrics.segmentation.convexity import find_overlapping_nuclei
-
-        cells, nucleus = overlapping_geoms
-        out = find_overlapping_nuclei(cells, nucleus)
-        assert out[0] == ["n0", "n1"]
-        assert out[1] == ["n2"]
-
-    def test_one_entry_per_cell_including_empty(self, overlapping_geoms):
-        """nuclei_count.py does len(x) on every row, so empties must be lists."""
-        from spoqc.metrics.segmentation.convexity import find_overlapping_nuclei
-
-        cells, nucleus = overlapping_geoms
-        out = find_overlapping_nuclei(cells, nucleus)
-        assert len(out) == len(cells)
-        assert out[2] == []
-        assert [len(x) for x in out] == [2, 1, 0]
-
-    def test_random_geometries_agree(self):
-        from spoqc.metrics.segmentation.convexity import find_overlapping_nuclei
-
-        rng = np.random.default_rng(0)
-        n = 300
-        cx, cy = rng.uniform(0, 200, n), rng.uniform(0, 200, n)
-        cells = gpd.GeoDataFrame(geometry=[box(x, y, x + 12, y + 12) for x, y in zip(cx, cy)])
-        nx, ny = rng.uniform(0, 200, n), rng.uniform(0, 200, n)
-        nucleus = gpd.GeoDataFrame(geometry=[Point(x, y) for x, y in zip(nx, ny)])
-        got = find_overlapping_nuclei(cells, nucleus)
-        exp = _orig_find_overlapping_nuclei(cells, nucleus)
-        assert [list(a) for a in got] == [list(b) for b in exp]
-
-
 class TestPointsWithinRadius:
     @pytest.fixture
     def pts(self):
@@ -130,6 +63,52 @@ class TestPointsWithinRadius:
 
         df = pd.DataFrame({"x": [0.0, 1.0], "y": [0.0, 0.0]}, index=["a", "b"])
         assert points_within_radius(df, 10.0, False) == [["b"], ["a"]]
+
+    def test_duplicate_index_labels_counts_agree(self):
+        """num=True is identical even with duplicate labels: both drop exactly one."""
+        from spoqc.helperfuncs import points_within_radius
+
+        df = self._duplicate_label_frame()
+        assert points_within_radius(df, 1.5, True) == _orig_points_within_radius(
+            df, 1.5, True
+        )
+
+    def test_duplicate_index_labels_differ_only_in_order(self):
+        """With duplicate labels the two self-exclusion rules order differently.
+
+        Self-exclusion changed from by-label to by-position. The old code did
+        `close.remove(i)`, and list.remove drops the first element equal to `i` --
+        when several rows share label `i` that is some other row, not the query
+        point. For the row at x=2.5 (label 'a', position 3) the neighbour labels
+        in position order are ['a', 'b', 'a']; the old code removed the 'a' at
+        position 1 and kept the query point's own label.
+
+        Because rows sharing a label are indistinguishable in a list of labels,
+        the returned multiset is unchanged either way -- so this is an ORDERING
+        difference, not a membership one, and the counts are identical. The new
+        result is in position order, which is what the old code produced for a
+        unique index; the old code's output was not.
+
+        Latent on dev: cell and nucleus tables are keyed by unique ids in
+        practice, so this path is only reachable with a non-unique index.
+        """
+        from spoqc.helperfuncs import points_within_radius
+
+        df = self._duplicate_label_frame()
+        old = _orig_points_within_radius(df, 1.5, False)
+        new = points_within_radius(df, 1.5, False)
+
+        assert old[:3] == new[:3], "rows 0-2 agree exactly"
+        assert sorted(old[3]) == sorted(new[3]), "same labels either way"
+        assert old[3] == ["b", "a"] and new[3] == ["a", "b"], "differing only in order"
+
+    @staticmethod
+    def _duplicate_label_frame():
+        # positions: 0='a'@0.0  1='a'@1.0  2='b'@2.0  3='a'@2.5
+        return pd.DataFrame(
+            {"x": [0.0, 1.0, 2.0, 2.5], "y": [0.0, 0.0, 0.0, 0.0]},
+            index=["a", "a", "b", "a"],
+        )
 
     def test_no_longer_iterates_rows(self):
         import inspect
