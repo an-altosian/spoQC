@@ -195,15 +195,17 @@ class TestTranscriptBinningFollowsResolution:
         assert got.shape == (self.H // div, self.W // div)
         assert got.sum() == len(df), "no point may be dropped or double-counted"
 
-    def test_mean_reduction_matches_the_previous_pandas_path(self):
-        """qv_image's reduction is a mean, so it is NOT bit-identical.
+    def test_mean_reduction_is_bit_identical(self):
+        """qv_image's reduction must be bit-identical, not merely close.
 
-        The previous path summed each pixel's values through pandas' groupby;
-        this one uses np.bincount weights. Both are correct means of the same
-        points but accumulate in a different order, so they differ by a few ULP.
-        Measured on 1M points over a 1000x1000 grid: 1.07% of pixels differ,
-        max absolute 7.11e-15, max relative 4.28e-16, at most 3 ULP, and the two
-        are equal once cast to float32. That is the bar asserted here.
+        The expensive part of the old path was the per-pixel Python tuple and the
+        MultiIndex alignment, not the reduction, so the reduction stays as
+        pandas' own groupby -- keyed on the flat pixel index instead of an (x, y)
+        MultiIndex. The same values are grouped together in the same order, so
+        every output float is unchanged down to the last bit.
+
+        An np.bincount-based mean is faster again but differs by up to 3 ULP;
+        this test is what rejects it.
         """
         import pandas as pd
 
@@ -230,15 +232,19 @@ class TestTranscriptBinningFollowsResolution:
             dim, self.H, self.W, how="mean",
         )
 
-        diff = np.abs(got - expected)
-        assert diff.max() < 1e-12, f"max abs diff {diff.max():.3g} exceeds 1e-12"
-        nz = expected != 0
-        ulp = diff[nz] / np.spacing(np.abs(expected[nz]))
-        assert ulp.max() <= 4, f"max {ulp.max():.1f} ULP exceeds the 4 ULP bar"
         np.testing.assert_array_equal(
-            got.astype(np.float32), expected.astype(np.float32),
-            err_msg="the two means must agree exactly at float32 precision",
+            got, expected,
+            err_msg="the mean reduction must be bit-identical to the previous path",
         )
+
+    def test_unknown_reduction_raises(self):
+        from spoqc.metrics.transcript_density import _grid
+
+        dim = self._dim(self.W, self.H)
+        with pytest.raises(ValueError, match="expected mean or max"):
+            _grid.bin_reduce(
+                np.zeros(3), np.zeros(3), np.zeros(3), dim, self.H, self.W, how="sum"
+            )
 
     def test_max_reduction_is_exact(self):
         """how='max' selects an existing value, so it must be bit-identical."""
@@ -283,7 +289,7 @@ class TestTranscriptBinningFollowsResolution:
         blocks = full.reshape(self.H // 4, 4, self.W // 4, 4).sum(axis=(1, 3))
         assert np.array_equal(quarter, blocks)
 
-    @pytest.mark.parametrize("how", ["mean", "max", "sum"])
+    @pytest.mark.parametrize("how", ["mean", "max"])
     def test_reductions_shape_and_emptiness(self, how):
         from spoqc.metrics.transcript_density import _grid
 
