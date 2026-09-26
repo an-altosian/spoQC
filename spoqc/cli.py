@@ -765,6 +765,11 @@ def main(argv: list[str] | None = None) -> None:
     ###### FINAL REPORT ######
     ##########################
     # Low resources, fast
+    # Figure writes are deferred to a process pool, so every queued figure must be on
+    # disk before the report reads them back to base64-embed them. This is the one
+    # ordering constraint the deferral introduces.
+    written = helperfuncs.shutdown_figure_pool()
+
     if ( CONST.STEP in ['all', 'final_report'] ):
         subworkflows.final_report.create_final_report(CONST.FIGURE_PATH, stainings, CONST.GENERATE_REPORT_DOC)
     print("[FINISH]")
