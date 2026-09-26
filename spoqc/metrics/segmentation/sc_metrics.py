@@ -25,32 +25,6 @@ def add_pearsoncorr_to_plotly(fig, x, y, xpos=0.05, ypos=0.95):
     )
 
 # Calculate confidence intervale function
-def get_ci_df(count_series, mode, rna):
-    min_num_cells = np.min(count_series.size())
-
-    # Get number of groups
-    num_group = len(rna.obs.groupby(mode).size())
-
-    num_replicates = 1000
-
-    mean_array = np.empty([0])
-    labels = np.empty([0])
-
-    for key, item in count_series:
-        labels = np.append(labels, np.array([key]*num_replicates))
-
-        tmp_mean_array = np.empty([num_replicates])
-        counts = np.array(count_series.get_group(key).tolist())
-
-        for i in range(0, num_replicates):
-            tmp_mean_array[i] = np.mean(random.choices(counts, k=min_num_cells))
-
-        mean_array = np.append(mean_array, tmp_mean_array)
-    
-    d = {'group': labels, 'values': mean_array}
-    d = pd.DataFrame(data=d, index=[x for x in range(0, num_group*num_replicates)])
-    return(d)
-
 def prepate_qc(sdata, figure_path=None):
 
     ####################################################################################################################

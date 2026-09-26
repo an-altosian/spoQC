@@ -171,6 +171,9 @@ def start_image_struc_analyis(
         timer.stop()
         helperfuncs.nparr_to_parquet(pixel_relevance, step, spoqc_tmp_folder, tmp_suffix)
 
+    # None unless the entropy step runs; uniformity then derives from it
+    entropy_image_for_uniformity = None
+
     step = "entropy"
     if step in steps:
         # General Pixel Information. How much information contributes a pixel?
@@ -180,6 +183,9 @@ def start_image_struc_analyis(
         pixel_entropy = metrics.image.entropy.pixel_entropy(figure_path, texture_intensities, 5, imagedim)
         timer.stop()
         helperfuncs.nparr_to_parquet(pixel_entropy, step, spoqc_tmp_folder, tmp_suffix)
+        # kept so the uniformity step below can derive its map instead of
+        # sweeping the whole image a second time
+        entropy_image_for_uniformity = pixel_entropy
 
     ############################
     ###### Anti structure ######
@@ -190,7 +196,10 @@ def start_image_struc_analyis(
         # Is the pixel in a noisy region?
         print("[NOTE] Calculate pixel uniformity with")
         timer.start()
-        pixel_uniformity = metrics.image.uniformity.pixel_uniformity(figure_path, texture_intensities, 5, imagedim)
+        pixel_uniformity = metrics.image.uniformity.pixel_uniformity(
+            figure_path, texture_intensities, 5, imagedim,
+            entropy_image=entropy_image_for_uniformity,
+        )
         timer.stop()
         helperfuncs.nparr_to_parquet(pixel_uniformity, step, spoqc_tmp_folder, tmp_suffix)
 
