@@ -45,8 +45,14 @@ def uniformity_from_entropy(entropy_image, window_size, dtype):
 
     q = max(1 / window_area, 1 / (iinfo(dtype).max + 1)) is constant for a fixed
     window size and dtype, so the second sliding-window pass over the whole image
-    is redundant. Verified to float32 precision against the real kernels for
-    uint8/uint16 and window radii 2 and 5 -- see tests/test_redundant_work.py.
+    is redundant.
+
+    NOTE the two paths are not bit-identical. The numba kernel accumulates in
+    float32 and returns float32; this derivation returns float64, so it is the
+    more precise of the two. They agree to within float32 rounding: max absolute
+    difference measured at 2.46e-07 across uint8/uint16 at window sizes 5 and 11
+    (values lie in [0, ~1.2]), and 1.2e-07 on a 16.8 Mpx uint16 image. See
+    tests/test_redundant_work.py, which asserts atol=1e-6.
     """
     n = window_size * window_size
     q = max(1.0 / n, 1.0 / (np.iinfo(dtype).max + 1))

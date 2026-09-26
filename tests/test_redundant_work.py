@@ -5,92 +5,6 @@ import numpy as np
 import pytest
 
 
-class TestPdfTwinsAreOptIn:
-    """Every figure was written as PNG and vector PDF; nothing reads the PDF."""
-
-    def test_final_report_embeds_only_png(self):
-        """The premise for gating PDF writes: the report never consumes a .pdf."""
-        import inspect
-
-        from spoqc.subworkflows import final_report
-
-        src = inspect.getsource(final_report)
-        assert ".pdf" not in src, "final_report must not reference a .pdf"
-        assert ".png" in src
-
-    def test_gate_exists_and_defaults_off(self):
-        from spoqc import helperfuncs
-
-        assert helperfuncs.WRITE_PDF is False
-
-    def test_no_ungated_pdf_writes_remain(self):
-        """Paren-aware scan: every savefig/write_image producing a .pdf is gated."""
-        import io
-        import pathlib
-        import tokenize
-
-        bad = []
-        for path in pathlib.Path("spoqc").rglob("*.py"):
-            text = path.read_text()
-            # drop comments so prose mentioning the old form is not matched
-            stripped = []
-            for tok in tokenize.generate_tokens(io.StringIO(text).readline):
-                if tok.type != tokenize.COMMENT:
-                    stripped.append(tok)
-            code = tokenize.untokenize(stripped)
-            for fn in ("savefig", "write_image"):
-                idx = 0
-                while (i := code.find(fn + "(", idx)) != -1:
-                    idx = i + 1
-                    if code[max(0, i - 4):i].endswith("_pdf"):
-                        continue
-                    depth, j = 0, code.index("(", i)
-                    while j < len(code):
-                        if code[j] == "(":
-                            depth += 1
-                        elif code[j] == ")":
-                            depth -= 1
-                            if depth == 0:
-                                break
-                        j += 1
-                    if ".pdf" in code[i:j]:
-                        bad.append(f"{path}: {code[i:j][:70]}")
-        assert not bad, f"ungated PDF writes: {bad}"
-
-    def test_scanpy_pdf_save_is_gated(self):
-        """scanpy writes figures itself, so savefig-based gating misses it."""
-        import inspect
-
-        from spoqc.subworkflows import qc_model
-
-        src = inspect.getsource(qc_model)
-        i = src.index("save='.pdf'")
-        window = src[max(0, i - 200):i]
-        assert "WRITE_PDF" in window, "the scanpy .pdf save must sit behind the gate"
-
-    def test_helpers_are_noops_when_disabled(self, tmp_path):
-        from spoqc import helperfuncs
-
-        target = tmp_path / "nope.pdf"
-        helperfuncs.savefig_pdf(str(target), dpi=300)
-        assert not target.exists(), "savefig_pdf must not write while WRITE_PDF is False"
-
-    def test_helper_writes_when_enabled(self, tmp_path, monkeypatch):
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        from spoqc import helperfuncs
-
-        monkeypatch.setattr(helperfuncs, "WRITE_PDF", True)
-        plt.figure()
-        plt.plot([0, 1], [0, 1])
-        target = tmp_path / "yes.pdf"
-        helperfuncs.savefig_pdf(str(target))
-        plt.close()
-        assert target.exists() and target.stat().st_size > 0
-
-
 class TestUniformityDerivedFromEntropy:
     """uniformity = -(entropy + log q); the second sweep is redundant."""
 
@@ -107,7 +21,11 @@ class TestUniformityDerivedFromEntropy:
         derived = U.uniformity_from_entropy(
             sliding_window_padded(E.entropy, img, r, mode="reflect"), window, img.dtype
         )
-        np.testing.assert_allclose(derived, direct, atol=1e-4)
+        # The kernel accumulates in float32, the derivation in float64, so the
+        # bar is float32 rounding rather than bit-identity. Measured max absolute
+        # difference across these four cases is 2.46e-07; 1e-6 leaves ~4x margin.
+        assert direct.dtype == np.float32 and derived.dtype == np.float64
+        np.testing.assert_allclose(derived, direct, atol=1e-6, rtol=0)
 
     def test_accepts_a_flattened_entropy_map(self):
         """structure_analysis carries the entropy map flattened."""

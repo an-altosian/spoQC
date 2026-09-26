@@ -135,7 +135,7 @@ def calc_void(
 
         plt.title("Triangle Connectivity Graph")
         plt.savefig(f'{figure_path}/traingle_connectivit_graph.png', bbox_inches='tight', dpi=300)
-        helperfuncs.savefig_pdf(f'{figure_path}/traingle_connectivit_graph.pdf', bbox_inches='tight', dpi=300)
+        plt.savefig(f'{figure_path}/traingle_connectivit_graph.pdf', bbox_inches='tight', dpi=300)
         plt.close()
 
     ###########################
@@ -153,7 +153,7 @@ def calc_void(
 
     figures.append(fig)
     fig.write_image(f"{figure_path}/boxplot_edge_lengths.png", scale=3)
-    helperfuncs.write_image_pdf(fig, f"{figure_path}/boxplot_edge_lengths.pdf", scale=3)
+    fig.write_image(f"{figure_path}/boxplot_edge_lengths.pdf", scale=3)
 
     with open(f'{figure_path}/void.html', 'w') as f:
         for fig in figures:
@@ -229,7 +229,7 @@ def calc_void(
     ax.set_title("Largest Enclosed Empty Patches")
     ax.set_aspect('equal', adjustable='box')
     plt.savefig(f'{figure_path}/spatial_traingle_all_clsuters.png', bbox_inches='tight', dpi=300)
-    helperfuncs.savefig_pdf(f'{figure_path}/spatial_traingle_all_clsuters.pdf', bbox_inches='tight', dpi=300)
+    plt.savefig(f'{figure_path}/spatial_traingle_all_clsuters.pdf', bbox_inches='tight', dpi=300)
     plt.close()
 
     timer.stop()
@@ -289,7 +289,7 @@ def calc_void(
             bbox_inches='tight',
             dpi=300
         )
-        helperfuncs.savefig_pdf(
+        plt.savefig(
             f'{figure_path}/spatial_traingle_filtered_clusters_{with_numbers}.pdf',
             bbox_inches='tight',
             dpi=300
@@ -453,7 +453,7 @@ def calc_void(
         plt.ylabel(y)
 
         plt.savefig(f'{figure_path}/barplot_void_{y}.png', bbox_inches='tight', dpi=300)
-        helperfuncs.savefig_pdf(f'{figure_path}/barplot_void_{y}.pdf', bbox_inches='tight', dpi=300)
+        plt.savefig(f'{figure_path}/barplot_void_{y}.pdf', bbox_inches='tight', dpi=300)
         plt.close()
 
     #################################################
@@ -556,7 +556,7 @@ def calc_void(
             plt.colorbar(sm, ax=ax, label=cat)
 
             plt.savefig(f'{figure_path}/spatial_traingle_all_clsuters_{cat}.png', bbox_inches='tight', dpi=300)
-            helperfuncs.savefig_pdf(f'{figure_path}/spatial_traingle_all_clsuters_{cat}.pdf', bbox_inches='tight', dpi=300)
+            plt.savefig(f'{figure_path}/spatial_traingle_all_clsuters_{cat}.pdf', bbox_inches='tight', dpi=300)
             plt.close()
 
         else:
