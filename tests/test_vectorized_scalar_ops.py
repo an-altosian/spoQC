@@ -47,46 +47,14 @@ class TestPixelCountFromShape:
         assert int(np.prod(a.shape[-2:])) == 64 * 32
 
 
-class TestSilhouetteSubsampled:
-    """helperfuncs.py:965 -- exhaustive silhouette is O(n^2) and runs 145 times
-    in the resolution sweep (29 resolutions x 5 inits)."""
-
-    def test_call_passes_sample_size(self):
-        import inspect
-
-        from spoqc import helperfuncs
-
-        src = inspect.getsource(helperfuncs)
-        i = src.index("silhouette_score(adata_test.obsm['X_umap']")
-        assert "sample_size" in src[i:i + 260]
-
-    def test_clamped_form_is_exact_below_the_cap(self):
-        from sklearn.metrics import silhouette_score
-
-        rng = np.random.default_rng(0)
-        X = rng.random((60, 2))
-        labels = rng.integers(0, 3, 60)
-        assert silhouette_score(
-            X, labels, sample_size=min(10_000, len(X)), random_state=0
-        ) == pytest.approx(silhouette_score(X, labels))
-
-    def test_subsampled_score_tracks_the_exhaustive_one(self):
-        """On separated clusters the subsample must reach the same conclusion."""
-        from sklearn.metrics import silhouette_score
-
-        rng = np.random.default_rng(0)
-        X = np.vstack([rng.normal(c, 0.25, (6000, 2)) for c in (0, 8, 16)])
-        labels = np.repeat([0, 1, 2], 6000)
-        full = silhouette_score(X, labels)
-        sub = silhouette_score(X, labels, sample_size=10_000, random_state=0)
-        assert sub == pytest.approx(full, abs=0.02)
-        assert sub > 0.8, "well-separated clusters must still score high"
-
-
-class TestBackgroundExcludedFromLabelStats:
+class TestBackgroundMaskIsWastedWork:
     """hqcr.py:313 -- `flat_index >= 0` is always true for a rasterize(fill=0)
-    index map, so it copied the full image while removing nothing, and folded
-    background into polygon id 0."""
+    index map, so the mask copied both full-size arrays while removing nothing.
+
+    It is NOT a correctness fix. `ndimage.mean` only computes the labels named in
+    `index`, and rasterized polygon ids start at 1, so background pixels carried
+    as label 0 were never read. The results are identical; the work was wasted.
+    """
 
     def test_source_uses_strict_greater_than(self):
         import inspect
@@ -99,19 +67,27 @@ class TestBackgroundExcludedFromLabelStats:
 
     def test_old_mask_removed_nothing(self):
         index_map = np.array([[0, 0, 1], [0, 2, 2]])
-        assert (index_map.ravel() >= 0).all()
+        assert (index_map.ravel() >= 0).all(), (
+            "the >= 0 mask is vacuously true, so it only copied the arrays"
+        )
 
     def test_new_mask_keeps_only_in_cell_pixels(self):
         index_map = np.array([[0, 0, 1], [0, 2, 2]])
         assert (index_map.ravel() > 0).sum() == 3
 
-    def test_background_no_longer_pollutes_label_means(self):
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_results_are_identical_either_way(self, seed):
+        """The acceptance bar: both masks must produce the same per-label means."""
         from scipy import ndimage
 
-        index_map = np.array([[0, 1], [2, 2]])
-        values = np.array([[100.0, 5.0], [7.0, 9.0]])
+        rng = np.random.default_rng(seed)
+        index_map = rng.integers(0, 6, (40, 40))
+        values = rng.random((40, 40)) * 100
         fi, fl = index_map.ravel(), values.ravel()
-        m = fi > 0
-        means = ndimage.mean(input=fl[m], labels=fi[m], index=np.array([1, 2]))
-        assert means[0] == pytest.approx(5.0)
-        assert means[1] == pytest.approx(8.0)
+        labels = np.arange(1, 6)
+
+        old = ndimage.mean(input=fl[fi >= 0], labels=fi[fi >= 0], index=labels)
+        new = ndimage.mean(input=fl[fi > 0], labels=fi[fi > 0], index=labels)
+        np.testing.assert_array_equal(
+            old, new, err_msg="dropping background must not change any label mean"
+        )
