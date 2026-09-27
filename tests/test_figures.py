@@ -329,3 +329,116 @@ class TestCli:
         with pytest.raises(RuntimeError, match="step failed"):
             self._main(monkeypatch, tmp_path, run, calls)
         assert calls == [("start", 12 // figures.THREADS_PER_FIGURE_WORKER), ("abort",)]
+
+
+def _png(path):
+    from PIL import Image
+
+    return np.asarray(Image.open(path).convert("RGBA")).astype(int)
+
+
+class TestPerPixelAttributes:
+    """Everything per-pixel must be reduced with the data, or the worker's render breaks."""
+
+    SHAPE = (3000, 2000)
+
+    def _smooth(self, channels=None):
+        yy, xx = np.mgrid[0 : self.SHAPE[0], 0 : self.SHAPE[1]]
+        base = (np.sin(xx / 300) * np.cos(yy / 400) + 1) / 2
+        return base if channels is None else np.stack([base ** (i + 1) for i in range(channels)], axis=-1)
+
+    def _reduced_vs_exact(self, tmp_path, draw):
+        """Save the same figure reduced and exact; return (number of reduced arrays, mean |diff|)."""
+        fig = plt.figure(figsize=(3, 2), dpi=100)
+        ax = fig.add_axes((0.1, 0.1, 0.8, 0.8))
+        draw(ax)
+        n_reduced = len(figures._reduced_images(fig, 100))
+        save_figure(fig, tmp_path / "reduced.png", tmp_path / "reduced.pdf")
+        save_figure(fig, tmp_path / "exact.png", exact=True)
+        plt.close(fig)
+        assert (tmp_path / "reduced.pdf").read_bytes().startswith(b"%PDF")
+        return n_reduced, np.abs(_png(tmp_path / "reduced.png") - _png(tmp_path / "exact.png")).mean()
+
+    def test_array_alpha_is_reduced_with_the_data(self, tmp_path):
+        # ovrlpy._plot_signal_integrity: imshow(integrity, alpha=(signal / t).clip(0, 1) ** 2)
+        alpha = self._smooth() ** 2
+        n, diff = self._reduced_vs_exact(
+            tmp_path, lambda ax: ax.imshow(self._smooth(), alpha=alpha, vmin=0, vmax=1, origin="lower")
+        )
+        assert n == 2 and diff < 2
+
+    def test_array_alpha_with_a_pool_writes_png_and_pdf_and_leaves_the_caller_alone(self, pool, tmp_path):
+        fig, ax = plt.subplots(figsize=(3, 2), dpi=100)
+        alpha = self._smooth()
+        image = ax.imshow(self._smooth().astype(np.float32), alpha=alpha)
+        save_figure(fig, tmp_path / "a.png", tmp_path / "a.pdf")
+        pool.wait()
+        assert image.get_alpha() is alpha and image.get_array().shape == self.SHAPE
+        assert (tmp_path / "a.png").read_bytes().startswith(b"\x89PNG")
+        assert (tmp_path / "a.pdf").read_bytes().startswith(b"%PDF")
+
+    @pytest.mark.parametrize("channels", [3, 4])
+    def test_rgb_and_rgba_float_images(self, tmp_path, channels):
+        n, diff = self._reduced_vs_exact(tmp_path, lambda ax: ax.imshow(self._smooth(channels)))
+        assert n == 1 and diff < 2
+
+    def test_rgba_float_image_with_array_alpha(self, tmp_path):
+        n, diff = self._reduced_vs_exact(tmp_path, lambda ax: ax.imshow(self._smooth(4), alpha=self._smooth()))
+        assert n == 2 and diff < 2
+
+    def test_default_extent_and_clim_keep_their_place(self, tmp_path):
+        def draw(ax):
+            ax.imshow(self._smooth(), cmap="magma").set_clim(0.2, 0.8)
+
+        n, diff = self._reduced_vs_exact(tmp_path, draw)
+        assert n == 1 and diff < 2
+
+    def test_masked_image(self, tmp_path):
+        data = np.ma.masked_less(self._smooth(), 0.3)
+        n, diff = self._reduced_vs_exact(tmp_path, lambda ax: ax.imshow(data))
+        assert n == 1 and diff < 3
+
+    def test_non_uniform_image_is_never_reduced(self):
+        from matplotlib.image import NonUniformImage
+
+        fig, ax = plt.subplots(figsize=(3, 2), dpi=100)
+        image = NonUniformImage(ax)
+        image.set_data(np.linspace(0, 1, 2000), np.linspace(0, 1, 3000), self._smooth())
+        ax.add_image(image)
+        assert figures._reduced_images(fig, 100) == {}
+
+
+@pytest.fixture(scope="module")
+def small_ovrlp():
+    """A real ovrlpy analysis on 60k synthetic transcripts over 1500 x 1500 um (about 10 s)."""
+    ovrlpy = pytest.importorskip("ovrlpy")
+    rng = np.random.default_rng(0)
+    n, side = 60_000, 1500.0
+    x, y = rng.random(n) * side, rng.random(n) * side
+    domain = (x // 500).astype(int) + 3 * (y // 500).astype(int)
+    genes = np.array([f"g{i}" for i in range(12)])
+    df = pd.DataFrame({"gene": genes[(domain % 4) * 3 + rng.integers(0, 3, n)], "x": x, "y": y, "z": rng.normal(5, 1, n)})
+    ovrlp = ovrlpy.Ovrlp(df, min_distance=8, n_components=3, n_workers=2, random_state=0)
+    ovrlp.analyse()
+    return ovrlpy, ovrlp
+
+
+class TestOvrlpyFigures:
+    def test_region_of_interest_with_a_dense_integrity_map_is_written(self, pool, small_ovrlp, tmp_path):
+        # Regression: doublet_score.py doublet_case_*_zoomed crashed in the worker with
+        # "operands could not be broadcast" because the array alpha was not reduced.
+        ovrlpy, ovrlp = small_ovrlp
+        fig = ovrlpy.plot_region_of_interest(ovrlp, 750, 750, window_size=750, figsize=(6, 4))
+        assert len(figures._reduced_images(fig, 100)) == 2  # the integrity data and its alpha
+        save_figure(fig, tmp_path / "roi.png", tmp_path / "roi.pdf")
+        pool.wait()
+        assert (tmp_path / "roi.png").read_bytes().startswith(b"\x89PNG")
+        assert (tmp_path / "roi.pdf").read_bytes().startswith(b"%PDF")
+
+    def test_signal_integrity_map_is_written(self, pool, small_ovrlp, tmp_path):
+        ovrlpy, ovrlp = small_ovrlp
+        fig = ovrlpy.plot_signal_integrity(ovrlp, signal_threshold=2)
+        save_figure(fig, tmp_path / "map.png", tmp_path / "map.pdf")
+        pool.wait()
+        assert (tmp_path / "map.png").read_bytes().startswith(b"\x89PNG")
+        assert (tmp_path / "map.pdf").read_bytes().startswith(b"%PDF")
