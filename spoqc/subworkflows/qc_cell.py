@@ -9,7 +9,7 @@ def run_qc_cell(sdata, figure_path, CONST, obs_columns):
 
     print("[NOTE] Convexity QC")
     timer.start()
-    metrics.segmentation.convexity.calc_convexity(sdata, figure_path)
+    metrics.segmentation.convexity.calc_convexity(sdata, figure_path, CONST.THREADS)
     timer.stop()
 
     print("[NOTE] Multinuclei QC")

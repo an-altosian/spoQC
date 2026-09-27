@@ -1,122 +1,126 @@
 import numpy as np
 import plotly.express as px
+import shapely
 import geopandas as gpd
 
-from typing import Tuple, List
+from concurrent.futures import ThreadPoolExecutor
 
 from ... import helperfuncs
 
-def is_convex(polygon: List[Tuple[float, float]]) -> Tuple[bool, float]:
+def convexity_metrics(polygons: np.ndarray, threads: int) -> np.ndarray:
     """
-    Determines if a polygon is convex and measures its convexity.
-    
-    Parameters:
-        polygon (List[Tuple[float, float]]): List of (x, y) vertices defining the polygon.
-        
-    Returns:
-        Tuple[bool, float]: 
-            - A boolean indicating whether the polygon is convex.
-            - A float representing the convexity metric (range [0, 1]; 1 is fully convex).
-    """
-    n = len(polygon)
-    if n < 3:
-        raise ValueError("A polygon must have at least three vertices.")
-    
-    cross_products = []
-    for i in range(n):
-        # Get three consecutive points
-        p1 = np.array(polygon[i])
-        p2 = np.array(polygon[(i + 1) % n])
-        p3 = np.array(polygon[(i + 2) % n])
-        
-        # Compute vectors
-        v1 = p2 - p1
-        v2 = p3 - p2
-        
-        # Compute the cross product of vectors
-        cross_product = np.cross(v1, v2)
-        cross_products.append(cross_product)
-    
-    # Check if all cross products have the same sign
-    all_positive = all(cp > 0 for cp in cross_products)
-    all_negative = all(cp < 0 for cp in cross_products)
-    
-    is_polygon_convex = all_positive or all_negative
+    Measures the convexity of every polygon's exterior ring at once.
 
-    # Measure convexity as the ratio of consistent angles
-    neg = 0
-    pos = 0
-    if all_positive or all_negative:
-        pos = sum(cp != 0 for cp in cross_products)
-    else:
-        # Sum up the boolean vectore (i.e., sum up all Ture)
-        neg = sum(cp < 0 for cp in cross_products)
-        pos = sum(cp > 0 for cp in cross_products)
+    For each ring (closing vertex included) the cross product of each pair of
+    consecutive edges is computed; the metric is the larger of the number of
+    positive and negative cross products divided by the number of vertices
+    (range [0, 1]; 1 is fully convex).
+
+    Parameters:
+        polygons (np.ndarray): Array of shapely Polygons.
+        threads (int): Number of threads; each handles a contiguous chunk of polygons.
+
+    Returns:
+        np.ndarray: float64 convexity metric per polygon.
+    """
+    with ThreadPoolExecutor(threads) as executor:
+        return np.concatenate(list(executor.map(_ring_convexity, np.array_split(polygons, threads))))
+
+
+def _ring_convexity(polygons: np.ndarray) -> np.ndarray:
+    coords, ring = shapely.get_coordinates(shapely.get_exterior_ring(polygons), return_index=True)
+    n = np.bincount(ring, minlength=len(polygons))
+    if (n < 3).any():
+        raise ValueError("A polygon must have at least three vertices.")
+
+    start = np.repeat(np.cumsum(n) - n, n)
+    local = np.arange(len(coords)) - start
+    n_ring = n[ring]
+    # Three consecutive points per vertex, wrapping around within each ring
+    p2 = coords[start + (local + 1) % n_ring]
+    p3 = coords[start + (local + 2) % n_ring]
+    v1 = p2 - coords
+    v2 = p3 - p2
+    cross_products = v1[:, 0] * v2[:, 1] - v1[:, 1] * v2[:, 0]
+
+    pos = np.bincount(ring[cross_products > 0], minlength=len(polygons))
+    neg = np.bincount(ring[cross_products < 0], minlength=len(polygons))
 
     # Just take the maximum amount of consistent angles
-    convexity_metric = np.max([neg,pos]) / len(cross_products)
-    
-    return is_polygon_convex, convexity_metric
+    return np.maximum(neg, pos) / n
 
 
 # Function to assign nulcei to cell
-def find_overlapping_nuclei(cells: gpd.GeoDataFrame, nucleus: gpd.GeoDataFrame):
+def find_overlapping_nuclei(cells: gpd.GeoDataFrame, nucleus: gpd.GeoDataFrame, threads: int):
+    """
+    Returns the (cell position, nucleus position) pairs whose nucleus centroid
+    intersects the cell, sorted by cell then nucleus position.
+    """
     print("[NOTE] Find overlapping nuceli for cells")
     timer = helperfuncs.Timer()
     timer.start()
-    overlaps = []
-    nucleus_centroids = nucleus.geometry.centroid
-    for cell in cells.geometry:
-        overlapping_indices = nucleus[nucleus_centroids.geometry.intersects(cell)].index.tolist()
-        overlaps.append(overlapping_indices)
+    cell_geometries = np.asarray(cells.geometry.values)
+    nucleus_centroids = np.asarray(nucleus.geometry.centroid.values)
+    tree = shapely.STRtree(nucleus_centroids)
+
+    def overlapping_pairs(chunk):
+        # Bounding-box candidates, then the exact predicate on each candidate pair
+        cell_pos, nucleus_pos = tree.query(cell_geometries[chunk])
+        cell_pos = chunk[cell_pos]
+        hit = shapely.intersects(nucleus_centroids[nucleus_pos], cell_geometries[cell_pos])
+        return cell_pos[hit], nucleus_pos[hit]
+
+    chunks = np.array_split(np.arange(len(cell_geometries)), threads)
+    with ThreadPoolExecutor(threads) as executor:
+        pairs = list(executor.map(overlapping_pairs, chunks))
+    cell_pos = np.concatenate([p[0] for p in pairs])
+    nucleus_pos = np.concatenate([p[1] for p in pairs])
+    order = np.lexsort((nucleus_pos, cell_pos))
     timer.stop()
-    return overlaps
+    return cell_pos[order], nucleus_pos[order]
 
 
-def calc_convexity(sdata, figure_path):
+def calc_convexity(sdata, figure_path, threads):
 
     timer = helperfuncs.Timer()
 
     # Convexity calculation for cell polygon
     print("[NOTE] Calculate convexity for cells")
     timer.start()
-    cell_convexity_metric_list = []
-    for poly in sdata['cell_boundaries']['geometry']:
-        cell_is_polygon_convex, cell_convexity_metric = is_convex(list(poly.exterior.coords))
-        cell_convexity_metric_list.append(cell_convexity_metric)
+    cell_convexity_metric = convexity_metrics(np.asarray(sdata['cell_boundaries'].geometry.values), threads)
     timer.stop()
 
-    sdata['table'].obs['convexity_cell'] = [True if x > 0.5 else False for x in cell_convexity_metric_list]
-    sdata['table'].obs['convexity_metric_cell'] = cell_convexity_metric_list
+    sdata['table'].obs['convexity_cell'] = cell_convexity_metric > 0.5
+    sdata['table'].obs['convexity_metric_cell'] = cell_convexity_metric
 
     # Find nuceli cell overlaps
-    nulcei_of_the_cell = find_overlapping_nuclei(sdata['cell_boundaries'], sdata['nucleus_boundaries'])
-    sdata['table'].obs['nuclei_idxs'] = nulcei_of_the_cell
+    n_cells = len(sdata['cell_boundaries'])
+    cell_pos, nucleus_pos = find_overlapping_nuclei(sdata['cell_boundaries'], sdata['nucleus_boundaries'], threads)
+    bounds = np.searchsorted(cell_pos, np.arange(n_cells + 1))
+    nucleus_labels = sdata['nucleus_boundaries'].index.values[nucleus_pos].tolist()
+    sdata['table'].obs['nuclei_idxs'] = [nucleus_labels[a:b] for a, b in zip(bounds[:-1], bounds[1:])]
 
     # Convexity calcualteion for nuclei associated with cell
     print("[NOTE] Calculate convexity for cells")
     timer.start()
-    nulcei_convexity_metric_list = []
-    min_convexity_metric_list = []
-    nuclei_idxs = sdata['table'].obs['nuclei_idxs']
-    for cell_nuclei in nuclei_idxs:
-            if ( len(cell_nuclei) != 0 ):
-                # Since we might have more then one nuclei in a cell we take the mean.
-                convexities = []
-                for nuceuls_idx in cell_nuclei:
-                    nuceuls_poly = sdata['nucleus_boundaries']['geometry'].loc[nuceuls_idx]
-                    is_polygon_convex, convexity_metric = is_convex(list(nuceuls_poly.exterior.coords))
-                    convexities.append(convexity_metric)
-                nulcei_convexity_metric_list.append(np.mean(convexities))
-                min_convexity_metric_list.append(np.min(convexities))
-            else:
-                nulcei_convexity_metric_list.append(0)
-                min_convexity_metric_list.append(0)
+    nuclei_convexity = convexity_metrics(np.asarray(sdata['nucleus_boundaries'].geometry.values)[nucleus_pos], threads)
+    n_nuclei = np.diff(bounds)
+    # Cells without nuclei get 0 (an integer column if no cell has a nucleus)
+    nulcei_convexity_metric = np.zeros(n_cells, dtype=float if len(nucleus_pos) else int)
+    min_convexity_metric = nulcei_convexity_metric.copy()
+    # Since we might have more then one nuclei in a cell we take the mean.
+    # Cells with the same nucleus count k form a (cells, k) matrix; numpy
+    # reduces each row exactly as it reduces a 1-D array of length k.
+    for k in np.unique(n_nuclei[n_nuclei > 0]):
+        cells_k = np.flatnonzero(n_nuclei == k)
+        convexities = nuclei_convexity[bounds[cells_k][:, None] + np.arange(k)]
+        nulcei_convexity_metric[cells_k] = np.mean(convexities, axis=1)
+        min_convexity_metric[cells_k] = np.min(convexities, axis=1)
     timer.stop()
 
-    sdata['table'].obs['convexity_mean_nuceli'] = nulcei_convexity_metric_list
-    sdata['table'].obs['convexity_min_nuceli'] = min_convexity_metric_list
-    sdata['table'].obs['convexity_nuclei'] = [True if x > 0.5 else False for x in min_convexity_metric_list]
+    sdata['table'].obs['convexity_mean_nuceli'] = nulcei_convexity_metric
+    sdata['table'].obs['convexity_min_nuceli'] = min_convexity_metric
+    sdata['table'].obs['convexity_nuclei'] = min_convexity_metric > 0.5
 
     plotcats = [['convexity_cell', 'convexity_metric_cell'], 
                 ['convexity_nuclei', 'convexity_mean_nuceli']]
