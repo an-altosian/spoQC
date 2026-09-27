@@ -441,8 +441,6 @@ def cell_quality_probability_refinement(sdata, imagedim, image_type, resolution,
         
     beliefs, labels = hqr.markov_random_field_zarr_parallel.first_version_loopy_belief_propagation_parallel(
         average_cell_probability_image,
-        spoqc_tmp_folder,
-        'hqcr',
         beta=1.5,
         max_iter=15,
         normalize='total'
