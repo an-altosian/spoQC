@@ -19,7 +19,7 @@ def dask_clustering_mini_batches(spoqc_tmp_folder, suffix, n_clusters, seed, chu
 
     timer = helperfuncs.Timer()
 
-    with dask.config.set(scheduler="threads", num_workers=threads):
+    with dask.config.set(scheduler="threads"):  # num_workers comes from core.threads
         print("[NOTE] Read data")
         dask_array = helperfuncs.read_data_as_ddf(tmp_files, chunk_size)
         n_rows = dask_array.shape[0]
