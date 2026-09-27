@@ -10,6 +10,7 @@ import scanpy as sc
 from plotly.subplots import make_subplots
 
 from .. import helperfuncs
+from ..core import spatial
 
 def plot_marker_density_and_scatter(sdata, figure_path, markers, name):
 
@@ -181,14 +182,9 @@ def plot_marker_boxplot(sdata, figure_path, markers, annotation_key, name):
     fig.write_image(f"{figure_path}/boxplot_{name}_plot.pdf", scale=3)
 
 
-def compute_radius_lists(rna_adata, radius, annotation_key, markers, figure_path, name):
+def compute_radius_lists(rna_adata, radius, annotation_key, markers, figure_path, name, threads):
 
-    cell_spatial_coords = pd.DataFrame({
-                            'x': rna_adata.obsm['spatial'][:, 0],
-                            'y': rna_adata.obsm['spatial'][:, 1]
-                        })
-
-    cells_lists = helperfuncs.points_within_radius(cell_spatial_coords, radius, False)
+    cells_lists = spatial.neighbour_lists(rna_adata.obsm['spatial'][:, :2], radius, threads)
 
     # These are used for plotting (dataframe) later
     celltype_mean_list = []
@@ -281,7 +277,7 @@ def plot_marker_radius_line(sdata, figure_path, markers, name, threads, annotati
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
         futures = [executor.submit(compute_radius_lists, rna_adata, radius, annotation_key, 
-                                   markers, figure_path, name) for radius in radi]
+                                   markers, figure_path, name, threads) for radius in radi]
         for future in concurrent.futures.as_completed(futures):
             results = future.result()
             radius_celltype_list = radius_celltype_list + results[0]

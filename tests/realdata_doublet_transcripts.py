@@ -7,7 +7,7 @@ Reads the transcript x/y exactly as spatialdata stores them (float32), builds ov
 doublets (int64 grid coordinates + builtin-min origin, sampled from real transcript
 locations with jitter), runs the verbatim original loop on `n_reference_doublets` of them
 against ALL transcripts, and asserts exact equality with the new code on the same doublets.
-Then times the new code on all `n_doublets` at 8 and 16 threads and reports cores used.
+Then times the new code on all `n_doublets` at 1 and 4 threads and reports cores used.
 """
 
 import resource
@@ -18,10 +18,8 @@ import numpy as np
 import pandas as pd
 import pyarrow.dataset as ds
 
-from spoqc.metrics.segmentation.doublet_score import (
-    CANDIDATE_RADIUS_PAD,
-    flag_transcripts_near_doublets,
-)
+from spoqc.core.spatial import _search_pad
+from spoqc.metrics.segmentation.doublet_score import flag_transcripts_near_doublets
 from test_doublet_transcripts import DISTANCE_THRESH, original_loop
 
 JITTER = 4  # grid units; most jittered doublets still sit on dense tissue
@@ -70,7 +68,7 @@ def main(points_dir, n_doublets=1500, n_reference=1500):
         original_loop, transcripts, reference, DISTANCE_THRESH
     )
     (new_d, new_w), new_wall, _ = timed(
-        flag_transcripts_near_doublets, transcripts, reference, DISTANCE_THRESH, 16
+        flag_transcripts_near_doublets, transcripts, reference, DISTANCE_THRESH, 4
     )
     assert ref_d.dtype == new_d.dtype and ref_w.dtype == new_w.dtype
     assert np.array_equal(ref_d, new_d) and np.array_equal(ref_w, new_w)
@@ -84,7 +82,8 @@ def main(points_dir, n_doublets=1500, n_reference=1500):
         f"(cores {ref_cores:.2f}); extrapolated to {n_doublets}: {per_doublet * n_doublets:.0f} s"
     )
 
-    # float32 formula vs exact float64 distance over all candidate pairs: must stay under the pad
+    # float32 formula vs exact float64 distance over all candidate pairs (informational: the
+    # search pad is relative because the tree holds the same float32-rounded coordinates)
     tx, ty = transcripts["x"], transcripts["y"]
     worst = 0.0
     for _, doublet in reference.iloc[:50].iterrows():
@@ -100,11 +99,11 @@ def main(points_dir, n_doublets=1500, n_reference=1500):
         )
         worst = max(worst, float(np.abs(f32 - f64).max(initial=0.0)))
     print(
-        f"max |formula - exact| over near pairs (50 doublets): {worst:.2e} (pad {CANDIDATE_RADIUS_PAD})"
+        f"max |formula - exact| over near pairs (50 doublets): {worst:.2e} "
+        f"(search pad {_search_pad(np.float32) * DISTANCE_THRESH:.2e})"
     )
-    assert worst < CANDIDATE_RADIUS_PAD
 
-    for threads in (8, 16):
+    for threads in (1, 4):
         _, wall, cores = timed(
             flag_transcripts_near_doublets,
             transcripts,

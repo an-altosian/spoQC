@@ -3,69 +3,46 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 import numpy as np
-from itertools import chain
-from scipy.spatial import cKDTree
 
 from ... import helperfuncs
+from ...core import spatial
 
-# Absolute pad (coordinate units) on the KD-tree candidate radius. The pandas formula in
-# flag_transcripts_near_doublets runs in float32 on the float32 transcript coordinates, so
-# its distances can differ from the tree's float64 distances by ~1e-3 at Xenium-scale
-# coordinates; the pad must exceed that so the search never drops a pair the formula accepts.
-CANDIDATE_RADIUS_PAD = 0.05
+# Initial doublet_distance of every cell, kept where no doublet is closer.
+NO_DOUBLET_DISTANCE = 100_000.0
 
 
 def flag_transcripts_near_doublets(
     transcript_coordinates_df, corrected_doublet_df, distance_thresh, threads
 ):
-    """Flag transcripts within distance_thresh of any doublet.
-
-    A KD-tree over the doublets, queried with `threads` workers, finds candidate
-    (transcript, doublet) pairs within a padded radius. The original per-doublet formula
-    (same pandas Series, same scalar, same dtypes) then decides on exactly those
-    candidates, so the result is bit-identical to evaluating it on every transcript,
-    for finite coordinates and with numexpr absent (numexpr would move the original's
-    full-length arithmetic from float32 to float64).
     """
-    n_transcripts = len(transcript_coordinates_df)
-    transcript_doublet = np.zeros(n_transcripts, dtype=bool)
-    transcript_wdoublet = np.zeros(n_transcripts, dtype=int)
+    Flag transcripts within distance_thresh of any doublet.
 
-    tx = transcript_coordinates_df["x"]
-    ty = transcript_coordinates_df["y"]
-    txy = np.column_stack((tx.to_numpy(), ty.to_numpy()))
-    tree = cKDTree(corrected_doublet_df[["x", "y"]].to_numpy())
-    radius = distance_thresh + CANDIDATE_RADIUS_PAD
+    The original per-doublet pandas expression ran in the transcripts' float32, with each
+    doublet coordinate cast to float32; pairs_within evaluates exactly that. (With numexpr
+    installed, pandas would have evaluated the original's full-length arithmetic in float64.)
+    """
+    transcript_xy = transcript_coordinates_df[["x", "y"]].to_numpy()
+    transcript_pos, _ = spatial.pairs_within(
+        transcript_xy,
+        corrected_doublet_df[["x", "y"]].to_numpy(),
+        distance_thresh,
+        threads,
+        dtype=transcript_xy.dtype,
+    )
+    transcript_doublet = np.zeros(len(transcript_xy), dtype=bool)
+    transcript_doublet[transcript_pos] = True
+    return transcript_doublet, transcript_doublet.astype(int)
 
-    n_candidates = tree.query_ball_point(
-        txy, radius, workers=threads, return_length=True
-    )
-    candidate_transcripts = np.flatnonzero(n_candidates)
-    neighbours = tree.query_ball_point(
-        txy[candidate_transcripts], radius, workers=threads
-    )
 
-    # Candidate pairs grouped by doublet; tree row k is the k-th row of corrected_doublet_df.
-    pair_doublet = np.fromiter(
-        chain.from_iterable(neighbours), dtype=np.intp, count=n_candidates.sum()
-    )
-    pair_transcript = np.repeat(
-        candidate_transcripts, n_candidates[candidate_transcripts]
-    )
-    pair_transcript = pair_transcript[np.argsort(pair_doublet, kind="stable")]
-    bounds = np.concatenate(
-        ([0], np.cumsum(np.bincount(pair_doublet, minlength=len(corrected_doublet_df))))
-    )
-
-    for k, (_, doublet) in enumerate(corrected_doublet_df.iterrows()):
-        idx = pair_transcript[bounds[k] : bounds[k + 1]]
-        x1, y1 = doublet["x"], doublet["y"]
-        distances = np.sqrt((tx.iloc[idx] - x1) ** 2 + (ty.iloc[idx] - y1) ** 2)
-        hits = idx[(distances <= distance_thresh).to_numpy()]
-        transcript_doublet[hits] = True
-        transcript_wdoublet[hits] = 1
-
-    return transcript_doublet, transcript_wdoublet
+def flag_cells_near_doublets(cell_xy, doublet_xy, distance_thresh, threads):
+    """
+    Distance of every cell to its nearest doublet (capped at NO_DOUBLET_DISTANCE), and
+    whether a doublet lies within distance_thresh. The minimum is exact (spatial.nearest),
+    and min <= thresh holds exactly when some doublet is within thresh.
+    """
+    _, distance = spatial.nearest(cell_xy, doublet_xy, threads)
+    doublet = distance <= distance_thresh
+    return doublet, doublet.astype(int), np.minimum(NO_DOUBLET_DISTANCE, distance)
 
 
 # window_sizes = for plotting. You can selected more windowsizes. This is just to zoom in or out for double plots.
@@ -211,28 +188,26 @@ def calc_doublet_score(
 
     # Link doublet detection back to spatial.
     # Based on a distance parameter say if a cell might be a doublet or not.
-    cell_dobulet_df = pd.DataFrame({
-        'x': [poly.centroid.x for poly in sdata['cell_boundaries']['geometry']],
-        'y': [poly.centroid.y for poly in sdata['cell_boundaries']['geometry']],
-        'doublet': [False] * sdata['table'].n_obs,
-        'wdoublet': [0] * sdata['table'].n_obs,
-        'doublet_distance': [100_000.0] * sdata['table'].n_obs
-    })
-
     corrected_doublet_df = doublet_df.copy()
 
     # Bring doublets back to the original coordinate system.
     corrected_doublet_df['x'] = doublet_df['x'] + min_x
     corrected_doublet_df['y'] = doublet_df['y'] + min_y
 
-    final_distances = np.array([100_000.0] * sdata['table'].n_obs)
-    for i, doublet in corrected_doublet_df.iterrows():
-        x1, y1 = doublet['x'], doublet['y']
-        distances = np.sqrt((cell_dobulet_df['x'] - x1)**2 + (cell_dobulet_df['y'] - y1)**2)
-        final_distances = np.minimum(final_distances, distances) 
-        cell_dobulet_df.loc[distances <= distance_thresh, 'doublet'] = True
-        cell_dobulet_df.loc[distances <= distance_thresh, 'wdoublet'] = 1
-    cell_dobulet_df['doublet_distance'] = final_distances
+    cell_dobulet_df = pd.DataFrame({
+        'x': [poly.centroid.x for poly in sdata['cell_boundaries']['geometry']],
+        'y': [poly.centroid.y for poly in sdata['cell_boundaries']['geometry']],
+    })
+    (
+        cell_dobulet_df['doublet'],
+        cell_dobulet_df['wdoublet'],
+        cell_dobulet_df['doublet_distance'],
+    ) = flag_cells_near_doublets(
+        cell_dobulet_df[['x', 'y']].to_numpy(),
+        corrected_doublet_df[['x', 'y']].to_numpy(),
+        distance_thresh,
+        threads,
+    )
 
     # Plot doublet density
     helperfuncs.plot_scatter_density_df(
