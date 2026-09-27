@@ -23,7 +23,9 @@ def flag_transcripts_near_doublets(
     A KD-tree over the doublets, queried with `threads` workers, finds candidate
     (transcript, doublet) pairs within a padded radius. The original per-doublet formula
     (same pandas Series, same scalar, same dtypes) then decides on exactly those
-    candidates, so the result is bit-identical to evaluating it on every transcript.
+    candidates, so the result is bit-identical to evaluating it on every transcript,
+    for finite coordinates and with numexpr absent (numexpr would move the original's
+    full-length arithmetic from float32 to float64).
     """
     n_transcripts = len(transcript_coordinates_df)
     transcript_doublet = np.zeros(n_transcripts, dtype=bool)

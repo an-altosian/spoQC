@@ -6,6 +6,10 @@ import pytest
 
 from spoqc.metrics.segmentation.doublet_score import flag_transcripts_near_doublets
 
+# The equivalence holds on pandas' standard path only: with numexpr, the original's
+# >1e6-element arithmetic runs in float64 while candidate subsets stay float32.
+assert not pd.core.computation.expressions.NUMEXPR_INSTALLED, "numexpr changes the original loop's dtype"
+
 DISTANCE_THRESH = 10  # value qc_doublets.py passes to calc_doublet_score
 THREADS = 4
 ORIGIN = 20_000.0  # Xenium-scale coordinates, so float32 rounding is live
