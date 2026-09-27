@@ -195,7 +195,7 @@ def run_qc_model(sdata, figure_path, CONST):
 
     sc.pl.pca_variance_ratio(rna_adata, n_pcs=n_comps, log=True, show=False)
     save_figure(plt.gcf(), f"{figure_path}/pca_variance_ratio.png", f"{figure_path}/pca_variance_ratio.pdf",
-                dpi=sc.settings.dpi_save, bbox_inches="tight")  # as scanpy's save= wrote them
+                bbox_inches="tight")  # as scanpy's save= wrote them (dpi from rcParams)
     plt.close()
 
     plot_pca_scatter(df, figure_path, npcs)

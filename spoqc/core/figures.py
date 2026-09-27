@@ -24,10 +24,11 @@ from matplotlib.image import AxesImage
 # ~0.1 ms per marker (44 s and 92 MB for the 410k-point doublet 3D scatter); rasterised it is
 # 5 s and 0.3 MB, drawn at the savefig dpi like the PNG. Axes and text stay vector.
 RASTERIZE_MIN_ELEMENTS = 10_000
-# Images with more samples than output pixels are decimated to this many samples per output
-# pixel before pickling. The render resamples to output pixels anyway; a 913 Mpx imshow otherwise
-# pickles ~7 GB per figure and spends minutes in _resample for each of PNG and PDF.
-IMAGE_SAMPLES_PER_PIXEL = 2
+# Images with more samples than output pixels are decimated (by stride) to this many samples per
+# output pixel before pickling; the renderer antialiases what is left down to output pixels (4
+# keeps a noise-texture image within 8/255 mean of the full-res render; 2 was 13/255). A 913 Mpx
+# imshow otherwise pickles ~4-7 GB per figure and spends minutes in _resample for PNG and PDF each.
+IMAGE_SAMPLES_PER_PIXEL = 4
 # Figures submitted but not yet written, per worker, before save_figure blocks (bounds the
 # pickled bytes held in memory).
 MAX_PENDING_PER_WORKER = 2
