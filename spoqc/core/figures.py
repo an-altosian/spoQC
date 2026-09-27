@@ -85,9 +85,15 @@ def _block_mean(a, k):
 
 
 def _reduced_images(fig, dpi):
-    """{id(image array): block-averaged copy} for float images far denser than the output."""
+    """{id(per-pixel array): block-averaged copy} for float images far denser than the output.
+
+    Every per-pixel array of an image is reduced with the same blocks: the data (with its mask,
+    and RGB(A) channels) and an array alpha. Extent (fixed by imshow), norm and clim are not
+    per-pixel and stay as they are. Only plain AxesImage: NonUniformImage/PcolorImage carry
+    per-pixel coordinate arrays and are left alone.
+    """
     reduced = {}
-    for image in fig.findobj(AxesImage):
+    for image in fig.findobj(lambda artist: type(artist) is AxesImage):
         a = image.get_array()
         if not np.issubdtype(a.dtype, np.floating) or image.get_interpolation() in (
             "nearest",
@@ -105,6 +111,9 @@ def _reduced_images(fig, dpi):
         k = int(round(samples_per_pixel / IMAGE_SAMPLES_PER_PIXEL, 6))  # display extents carry float noise
         if k > 1:  # the norm keeps the vmin/vmax imshow took from the full array
             reduced[id(a)] = _block_mean(a, k)
+            alpha = image.get_alpha()
+            if np.ndim(alpha) > 0:  # e.g. ovrlpy's signal-faded integrity map
+                reduced[id(alpha)] = _block_mean(np.asarray(alpha, dtype=np.float64), k)
     return reduced
 
 
