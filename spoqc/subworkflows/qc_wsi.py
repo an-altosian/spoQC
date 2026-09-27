@@ -8,7 +8,6 @@ import functools
 
 from concurrent.futures import ProcessPoolExecutor
 
-from .. import helperfuncs
 from spoqc.core import figures
 from spoqc.core.figures import save_figure
 
