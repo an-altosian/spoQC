@@ -50,8 +50,8 @@ def _search_pad(dtype) -> float:
     Relative pad on the KD-tree search radius.
 
     The deciding formula runs on the dtype-rounded coordinates the tree also holds, so its
-    only error is the rounding of a subtraction, two squares, a sum and a square root:
-    relative, below 4 * eps(dtype) / 2. The pad covers that 30-fold for float32 and keeps
+    only error is the rounding of a subtraction, two squares, a sum and a square root, which
+    is relative and below 4 * eps(dtype). The pad covers that 16-fold for float32 and keeps
     a 1e-9 floor so float64 callers stay far above the tree's own float64 round-off.
     """
     return max(64 * np.finfo(dtype).eps, 1e-9)
@@ -131,9 +131,9 @@ def nearest(query_xy, ref_xy, threads: int, distance_upper_bound: float = np.inf
 
     distance is the minimum over ALL ref points of the pairs_within expression (in `dtype`),
     exact by construction: with d0 the tree's nearest distance, the expression's minimiser j*
-    satisfies expr(j*) <= expr(tree nearest) <= d0 * (1 + pad), so it is among the candidates
-    pairs_within's search returns for radius d0 * (1 + pad), and the minimum over a superset
-    that contains j* is the global minimum. inf where the tree found none.
+    satisfies expr(j*) <= expr(tree nearest), so its exact distance is below d0 * (1 + pad);
+    the tree's candidates within d0 * (1 + pad) ** 2 therefore contain j*, and the minimum
+    over a superset that contains j* is the global minimum. inf where the tree found none.
 
     Returns:
         Tuple[np.ndarray, np.ndarray]: ref positions (np.intp) and distances (dtype).

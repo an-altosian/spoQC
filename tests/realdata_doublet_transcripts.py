@@ -82,8 +82,8 @@ def main(points_dir, n_doublets=1500, n_reference=1500):
         f"(cores {ref_cores:.2f}); extrapolated to {n_doublets}: {per_doublet * n_doublets:.0f} s"
     )
 
-    # float32 formula vs exact float64 distance over all candidate pairs (informational: the
-    # search pad is relative because the tree holds the same float32-rounded coordinates)
+    # float32 formula vs the exact distance between the float32-cast points the KD-tree holds:
+    # the relative error must stay under the relative search pad.
     tx, ty = transcripts["x"], transcripts["y"]
     worst = 0.0
     for _, doublet in reference.iloc[:50].iterrows():
@@ -94,14 +94,16 @@ def main(points_dir, n_doublets=1500, n_reference=1500):
         )
         f32 = np.sqrt((tx.iloc[near] - x1) ** 2 + (ty.iloc[near] - y1) ** 2).to_numpy()
         f64 = np.hypot(
-            tx.to_numpy()[near].astype(np.float64) - x1,
-            ty.to_numpy()[near].astype(np.float64) - y1,
+            tx.to_numpy()[near].astype(np.float64) - float(np.float32(x1)),
+            ty.to_numpy()[near].astype(np.float64) - float(np.float32(y1)),
         )
-        worst = max(worst, float(np.abs(f32 - f64).max(initial=0.0)))
+        nonzero = f64 > 0
+        worst = max(worst, float((np.abs(f32 - f64)[nonzero] / f64[nonzero]).max(initial=0.0)))
     print(
-        f"max |formula - exact| over near pairs (50 doublets): {worst:.2e} "
-        f"(search pad {_search_pad(np.float32) * DISTANCE_THRESH:.2e})"
+        f"max relative |formula - exact| over near pairs (50 doublets): {worst:.2e} "
+        f"(relative search pad {_search_pad(np.float32):.2e})"
     )
+    assert worst < _search_pad(np.float32)
 
     for threads in (1, 4):
         _, wall, cores = timed(

@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 
 from ... import helperfuncs
@@ -20,8 +22,7 @@ def get_border_scores(points, radius, step, threads):
         for a in angles
     ])
 
-    scores = np.empty((len(rotation_matrices), n_points))
-    for k, rotation_matrix in enumerate(rotation_matrices):
+    def rotation_scores(rotation_matrix):
         x_coords = (diffs @ rotation_matrix)[:, 0]
         # Add one to both sides to avoid inf; both sides are treated equally.
         num_left = np.bincount(point_pos[x_coords > 0], minlength=n_points) + 1
@@ -29,8 +30,11 @@ def get_border_scores(points, radius, step, threads):
         # Only the magnitude matters, not the direction. The few distinct ratios go through
         # the scalar log2, as the per-point original did.
         ratios, ratio_idx = np.unique(num_left / num_right, return_inverse=True)
-        scores[k] = np.array([abs(np.log2(ratio)) for ratio in ratios])[ratio_idx]
-    return scores.max(axis=0)
+        return np.array([abs(np.log2(ratio)) for ratio in ratios])[ratio_idx]
+
+    # numpy releases the GIL in the matmul, comparisons and bincounts: one rotation per thread.
+    with ThreadPoolExecutor(threads) as executor:
+        return np.max(list(executor.map(rotation_scores, rotation_matrices)), axis=0)
 
 
 def define_border_cells(sdata: dict, figure_path: str, thresh: float,

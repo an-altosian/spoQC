@@ -7,7 +7,7 @@ import concurrent.futures
 from libpysal.weights import KNN
 
 from ... import helperfuncs
-from ...core import spatial
+from ...core import groupreduce, spatial
 
 # Cells within this distance of a cell form its Moran's I neighbourhood.
 NEIGHBOURHOOD_RADIUS = 100
@@ -20,18 +20,31 @@ def fill_outside_from_nearest_inside(coords, feat, local_I, outside_mask, thread
     """
     Sets local_I of every outside transcript to that of the nearest inside transcript of the
     same feature closer than OUTSIDE_NEIGHBOUR_DISTANCE, else to 0.0. Modifies local_I in place.
+
+    Transcripts are grouped by feature once (a stable sort keeps each group's positions
+    ascending, as np.flatnonzero gave them); features then run on `threads` threads, one
+    nearest query each (KD-tree builds and queries release the GIL). Features only read
+    inside values and write disjoint outside positions, so the order does not matter.
     """
-    inside_mask = ~outside_mask
-    for f in np.unique(feat[outside_mask]):
-        out_idx = np.flatnonzero(outside_mask & (feat == f))
-        in_idx = np.flatnonzero(inside_mask & (feat == f))
-        local_I[out_idx] = 0.0
-        if in_idx.size == 0:
-            continue
-        nn, dists = spatial.nearest(coords[out_idx], coords[in_idx], threads, distance_upper_bound=OUTSIDE_NEIGHBOUR_DISTANCE)
-        has_neighbor = np.isfinite(dists) & (nn < in_idx.size)
-        local_I[out_idx[has_neighbor]] = local_I[in_idx[nn[has_neighbor]]]
+    codes, features = pd.factorize(feat)
+    order = np.argsort(codes, kind="stable")
+    offsets = groupreduce.group_offsets(codes[order], len(features))
+
+    def nearest_inside_values(members):
+        out_idx = members[outside_mask[members]]
+        in_idx = members[~outside_mask[members]]
+        values = np.zeros(out_idx.size, dtype=local_I.dtype)
+        if out_idx.size and in_idx.size:
+            nn, dists = spatial.nearest(coords[out_idx], coords[in_idx], 1, distance_upper_bound=OUTSIDE_NEIGHBOUR_DISTANCE)
+            has_neighbor = np.isfinite(dists) & (nn < in_idx.size)
+            values[has_neighbor] = local_I[in_idx[nn[has_neighbor]]]
+        return out_idx, values
+
+    with concurrent.futures.ThreadPoolExecutor(threads) as executor:
+        for out_idx, values in executor.map(nearest_inside_values, groupreduce.ragged_lists(order, offsets)):
+            local_I[out_idx] = values
     return local_I
+
 
 # Vectorized Moran-I for all genes in a neighborhood
 def moran_I_all_genes(X_dense: np.ndarray, w) -> np.ndarray:
