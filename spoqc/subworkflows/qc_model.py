@@ -6,13 +6,13 @@ import seaborn as sns
 import plotly.graph_objects as go
 import geopandas as gpd
 import scanpy as sc
-import shutil
 
 from plotly.subplots import make_subplots
 from esda.moran import Moran
 from libpysal.weights import Queen
 
 from .. import helperfuncs
+from spoqc.core.figures import save_figure
 
 
 
@@ -41,8 +41,7 @@ def plot_pca_scatter(df, figure_path, nPCs, flip=False):
         plt.legend(bbox_to_anchor=(1.15, 1), loc='upper left', borderaxespad=0., markerscale=1)
 
     plt.tight_layout()
-    plt.savefig(f'{figure_path}/scatterplot_PCs.png', bbox_inches='tight')
-    plt.savefig(f'{figure_path}/scatterplot_PCs.pdf', bbox_inches='tight')
+    save_figure(plt.gcf(), f'{figure_path}/scatterplot_PCs.png', f'{figure_path}/scatterplot_PCs.pdf', bbox_inches='tight')
     plt.close()
 
     # Individual PC plots
@@ -66,8 +65,7 @@ def plot_pca_scatter(df, figure_path, nPCs, flip=False):
         plt.legend(bbox_to_anchor=(1.15, 1), loc='upper left', borderaxespad=0., markerscale=1)
 
         plt.tight_layout()
-        plt.savefig(f'{figure_path}/scatterplot_PC{i+1}.png', bbox_inches='tight')
-        plt.savefig(f'{figure_path}/scatterplot_PC{i+1}.pdf', bbox_inches='tight')
+        save_figure(plt.gcf(), f'{figure_path}/scatterplot_PC{i+1}.png', f'{figure_path}/scatterplot_PC{i+1}.pdf', bbox_inches='tight')
         plt.close()
 
 
@@ -138,8 +136,7 @@ def plot_spatial_vs_exression_variance(sdata, figure_path, df, nPCs):
     helperfuncs.apply_general_plotly_layout(fig, True)
 
     fig.write_html(f"{figure_path}/pca_evaluation_spatial_variance.html")
-    fig.write_image(f"{figure_path}/pca_evaluation_spatial_variance.png", scale=3)
-    fig.write_image(f"{figure_path}/pca_evaluation_spatial_variance.pdf", scale=3)
+    save_figure(fig, f"{figure_path}/pca_evaluation_spatial_variance.png", f"{figure_path}/pca_evaluation_spatial_variance.pdf", scale=3)
 
     # Create a subplot with secondary y-axis
     fig = make_subplots(specs=[[{"secondary_y": True}]])
@@ -170,8 +167,7 @@ def plot_spatial_vs_exression_variance(sdata, figure_path, df, nPCs):
     helperfuncs.apply_general_plotly_layout(fig, True)
 
     fig.write_html(f"{figure_path}/pca_evaluation_moransi.html")
-    fig.write_image(f"{figure_path}/pca_evaluation_moransi.png", scale=3)
-    fig.write_image(f"{figure_path}/pca_evaluation_moransi.pdf", scale=3)
+    save_figure(fig, f"{figure_path}/pca_evaluation_moransi.png", f"{figure_path}/pca_evaluation_moransi.pdf", scale=3)
 
 
 def run_qc_model(sdata, figure_path, CONST):
@@ -197,10 +193,10 @@ def run_qc_model(sdata, figure_path, CONST):
     for i in range(0, npcs):
         df[f'PC{i}'] = X_pca[:,i]
 
-    sc.pl.pca_variance_ratio(rna_adata, n_pcs=n_comps, log=True, save='.png')
-    shutil.move("figures/pca_variance_ratio.png", f"{figure_path}/pca_variance_ratio.png")
-    sc.pl.pca_variance_ratio(rna_adata, n_pcs=n_comps, log=True, save='.pdf')
-    shutil.move("figures/pca_variance_ratio.pdf", f"{figure_path}/pca_variance_ratio.pdf")
+    sc.pl.pca_variance_ratio(rna_adata, n_pcs=n_comps, log=True, show=False)
+    save_figure(plt.gcf(), f"{figure_path}/pca_variance_ratio.png", f"{figure_path}/pca_variance_ratio.pdf",
+                bbox_inches="tight")  # as scanpy's save= wrote them (dpi from rcParams)
+    plt.close()
 
     plot_pca_scatter(df, figure_path, npcs)
     plot_spatial_vs_exression_variance(sdata, figure_path, df, npcs)

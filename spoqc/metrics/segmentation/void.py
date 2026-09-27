@@ -10,6 +10,7 @@ import seaborn as sns
 import os
 
 from ... import helperfuncs
+from spoqc.core.figures import save_figure
 
 def count_stuff_in_triangles_via_delaunay(delaunay, stuff):
     num_triangles = len(delaunay.simplices)
@@ -138,8 +139,7 @@ def calc_void(
         nx.draw_networkx_edge_labels(traingular_graph, pos, edge_labels=edge_labels, font_size=10)
 
         plt.title("Triangle Connectivity Graph")
-        plt.savefig(f'{figure_path}/traingle_connectivit_graph.png', bbox_inches='tight', dpi=300)
-        plt.savefig(f'{figure_path}/traingle_connectivit_graph.pdf', bbox_inches='tight', dpi=300)
+        save_figure(plt.gcf(), f'{figure_path}/traingle_connectivit_graph.png', f'{figure_path}/traingle_connectivit_graph.pdf', bbox_inches='tight', dpi=300)
         plt.close()
 
     ###########################
@@ -156,8 +156,7 @@ def calc_void(
     helperfuncs.apply_general_plotly_layout(fig, True)
 
     figures.append(fig)
-    fig.write_image(f"{figure_path}/boxplot_edge_lengths.png", scale=3)
-    fig.write_image(f"{figure_path}/boxplot_edge_lengths.pdf", scale=3)
+    save_figure(fig, f"{figure_path}/boxplot_edge_lengths.png", f"{figure_path}/boxplot_edge_lengths.pdf", scale=3)
 
     with open(f'{figure_path}/void.html', 'w') as f:
         for fig in figures:
@@ -232,8 +231,7 @@ def calc_void(
         ax.invert_yaxis()
     ax.set_title("Largest Enclosed Empty Patches")
     ax.set_aspect('equal', adjustable='box')
-    plt.savefig(f'{figure_path}/spatial_traingle_all_clsuters.png', bbox_inches='tight', dpi=300)
-    plt.savefig(f'{figure_path}/spatial_traingle_all_clsuters.pdf', bbox_inches='tight', dpi=300)
+    save_figure(plt.gcf(), f'{figure_path}/spatial_traingle_all_clsuters.png', f'{figure_path}/spatial_traingle_all_clsuters.pdf', bbox_inches='tight', dpi=300)
     plt.close()
 
     timer.stop()
@@ -288,16 +286,7 @@ def calc_void(
             plt.gca().invert_yaxis()
         ax.set_aspect('equal', adjustable='box')
         plt.title("Largest Enclosed Empty Patches")
-        plt.savefig(
-            f'{figure_path}/spatial_traingle_filtered_clusters_{with_numbers}.png',
-            bbox_inches='tight',
-            dpi=300
-        )
-        plt.savefig(
-            f'{figure_path}/spatial_traingle_filtered_clusters_{with_numbers}.pdf',
-            bbox_inches='tight',
-            dpi=300
-        )
+        save_figure(plt.gcf(), f'{figure_path}/spatial_traingle_filtered_clusters_{with_numbers}.png', f'{figure_path}/spatial_traingle_filtered_clusters_{with_numbers}.pdf', bbox_inches='tight', dpi=300)
         plt.close()
     
     timer.stop()
@@ -456,8 +445,7 @@ def calc_void(
         plt.xlabel("Void number")
         plt.ylabel(y)
 
-        plt.savefig(f'{figure_path}/barplot_void_{y}.png', bbox_inches='tight', dpi=300)
-        plt.savefig(f'{figure_path}/barplot_void_{y}.pdf', bbox_inches='tight', dpi=300)
+        save_figure(plt.gcf(), f'{figure_path}/barplot_void_{y}.png', f'{figure_path}/barplot_void_{y}.pdf', bbox_inches='tight', dpi=300)
         plt.close()
 
     #################################################
@@ -559,8 +547,7 @@ def calc_void(
             sm.set_array([])
             plt.colorbar(sm, ax=ax, label=cat)
 
-            plt.savefig(f'{figure_path}/spatial_traingle_all_clsuters_{cat}.png', bbox_inches='tight', dpi=300)
-            plt.savefig(f'{figure_path}/spatial_traingle_all_clsuters_{cat}.pdf', bbox_inches='tight', dpi=300)
+            save_figure(plt.gcf(), f'{figure_path}/spatial_traingle_all_clsuters_{cat}.png', f'{figure_path}/spatial_traingle_all_clsuters_{cat}.pdf', bbox_inches='tight', dpi=300)
             plt.close()
 
         else:
