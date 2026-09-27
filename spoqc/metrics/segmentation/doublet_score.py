@@ -3,8 +3,70 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 import numpy as np
+from itertools import chain
+from scipy.spatial import cKDTree
 
 from ... import helperfuncs
+
+# Absolute pad (coordinate units) on the KD-tree candidate radius. The pandas formula in
+# flag_transcripts_near_doublets runs in float32 on the float32 transcript coordinates, so
+# its distances can differ from the tree's float64 distances by ~1e-3 at Xenium-scale
+# coordinates; the pad must exceed that so the search never drops a pair the formula accepts.
+CANDIDATE_RADIUS_PAD = 0.05
+
+
+def flag_transcripts_near_doublets(
+    transcript_coordinates_df, corrected_doublet_df, distance_thresh, threads
+):
+    """Flag transcripts within distance_thresh of any doublet.
+
+    A KD-tree over the doublets, queried with `threads` workers, finds candidate
+    (transcript, doublet) pairs within a padded radius. The original per-doublet formula
+    (same pandas Series, same scalar, same dtypes) then decides on exactly those
+    candidates, so the result is bit-identical to evaluating it on every transcript,
+    for finite coordinates and with numexpr absent (numexpr would move the original's
+    full-length arithmetic from float32 to float64).
+    """
+    n_transcripts = len(transcript_coordinates_df)
+    transcript_doublet = np.zeros(n_transcripts, dtype=bool)
+    transcript_wdoublet = np.zeros(n_transcripts, dtype=int)
+
+    tx = transcript_coordinates_df["x"]
+    ty = transcript_coordinates_df["y"]
+    txy = np.column_stack((tx.to_numpy(), ty.to_numpy()))
+    tree = cKDTree(corrected_doublet_df[["x", "y"]].to_numpy())
+    radius = distance_thresh + CANDIDATE_RADIUS_PAD
+
+    n_candidates = tree.query_ball_point(
+        txy, radius, workers=threads, return_length=True
+    )
+    candidate_transcripts = np.flatnonzero(n_candidates)
+    neighbours = tree.query_ball_point(
+        txy[candidate_transcripts], radius, workers=threads
+    )
+
+    # Candidate pairs grouped by doublet; tree row k is the k-th row of corrected_doublet_df.
+    pair_doublet = np.fromiter(
+        chain.from_iterable(neighbours), dtype=np.intp, count=n_candidates.sum()
+    )
+    pair_transcript = np.repeat(
+        candidate_transcripts, n_candidates[candidate_transcripts]
+    )
+    pair_transcript = pair_transcript[np.argsort(pair_doublet, kind="stable")]
+    bounds = np.concatenate(
+        ([0], np.cumsum(np.bincount(pair_doublet, minlength=len(corrected_doublet_df))))
+    )
+
+    for k, (_, doublet) in enumerate(corrected_doublet_df.iterrows()):
+        idx = pair_transcript[bounds[k] : bounds[k + 1]]
+        x1, y1 = doublet["x"], doublet["y"]
+        distances = np.sqrt((tx.iloc[idx] - x1) ** 2 + (ty.iloc[idx] - y1) ** 2)
+        hits = idx[(distances <= distance_thresh).to_numpy()]
+        transcript_doublet[hits] = True
+        transcript_wdoublet[hits] = 1
+
+    return transcript_doublet, transcript_wdoublet
+
 
 # window_sizes = for plotting. You can selected more windowsizes. This is just to zoom in or out for double plots.
 # num_doublet = is just the amount of doublet that will be plottet as examples.
@@ -192,13 +254,9 @@ def calc_doublet_score(
     transcript_coordinates_df = sdata.points[key_transcripts].compute()
 
     # Detect transcript that might belong to doublets
-    transcript_doublet = np.array([False] * len(transcript_coordinates_df))
-    transcript_wdoublet = np.array([0] * len(transcript_coordinates_df))
-    for i, doublet in corrected_doublet_df.iterrows():
-        x1, y1 = doublet['x'], doublet['y']
-        distances = np.sqrt((transcript_coordinates_df['x'] - x1)**2 + (transcript_coordinates_df['y'] - y1)**2)
-        transcript_doublet[distances <= distance_thresh] = True
-        transcript_wdoublet[distances <= distance_thresh] = 1
+    transcript_doublet, transcript_wdoublet = flag_transcripts_near_doublets(
+        transcript_coordinates_df, corrected_doublet_df, distance_thresh, threads
+    )
 
     # Write out transcript doublet information for later usage
     transcript_doublet_df = pd.DataFrame({
