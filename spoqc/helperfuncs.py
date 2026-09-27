@@ -789,61 +789,6 @@ def min_value_shift(data: Union[np.ndarray, list]) -> np.ndarray:
     return shifted_data
 
 
-def points_within_radius(df: pd.DataFrame, radius: float, num: bool) -> List[Union[int, List[int]]]:
-    """
-    Get points within a given radius for each point in a DataFrame.
-
-    Parameters:
-    df (pd.DataFrame): DataFrame containing at least two columns, 'x' and 'y', representing coordinates of points.
-    radius (float): The radius within which to search for points.
-    num (bool): If True, return the number of points within the radius for each point. 
-                If False, return the indices of the points within the radius.
-
-    Returns:
-    List[Union[int, List[int]]]:
-        A list where each element corresponds to a point in `df`:
-        - If `num` is True, the element is the count of points within the radius.
-        - If `num` is False, the element is a list of indices of points within the radius.
-    """
-    points_in_radius = []
-    
-    for i, point in df.iterrows():
-        x1, y1 = point['x'], point['y']
-        
-        # Calculate the distance from this point to all other points
-        distances = np.sqrt((df['x'] - x1)**2 + (df['y'] - y1)**2)
-        
-        # Get the indices of points within the given radius (excluding the point itself)
-        close_points = df[distances <= radius].index.tolist()
-        close_points.remove(i)  # Remove the point itself from the list
-        
-        # Append the list of close points to the result.
-        if ( num ):
-            points_in_radius.append(len(close_points))
-        else:
-            points_in_radius.append(close_points)
-    
-    return points_in_radius
-
-
-def euclidean_distance(point1: Sequence[float], point2: Sequence[float]) -> float:
-    """
-    Computes the Euclidean distance between two points in n-dimensional space.
-
-    Args:
-        point1 (Sequence[float]): The first point, represented as a sequence of coordinates (e.g., list, tuple).
-        point2 (Sequence[float]): The second point, represented as a sequence of coordinates (e.g., list, tuple).
-
-    Returns:
-        float: The Euclidean distance between the two points.
-
-    The distance is computed as:
-        sqrt(sum((coord_1 - coord_2)^2 for each pair of coordinates))
-    """
-    return np.sqrt(sum((coord_1 - coord_2) ** 2 for coord_1, coord_2 in zip(point1, point2)))
-
-
-
 def add_manual_legend(legend_dict, points=None):
     # If you also want an entry for the red points overlay:
     include_points_in_legend = points is not None

@@ -5,6 +5,45 @@ import pandas as pd
 import numpy as np
 
 from ... import helperfuncs
+from ...core import spatial
+
+# Initial doublet_distance of every cell, kept where no doublet is closer.
+NO_DOUBLET_DISTANCE = 100_000.0
+
+
+def flag_transcripts_near_doublets(
+    transcript_coordinates_df, corrected_doublet_df, distance_thresh, threads
+):
+    """
+    Flag transcripts within distance_thresh of any doublet.
+
+    The original per-doublet pandas expression ran in the transcripts' float32, with each
+    doublet coordinate cast to float32; pairs_within evaluates exactly that. (With numexpr
+    installed, pandas would have evaluated the original's full-length arithmetic in float64.)
+    """
+    transcript_xy = transcript_coordinates_df[["x", "y"]].to_numpy()
+    transcript_pos, _ = spatial.pairs_within(
+        transcript_xy,
+        corrected_doublet_df[["x", "y"]].to_numpy(),
+        distance_thresh,
+        threads,
+        dtype=transcript_xy.dtype,
+    )
+    transcript_doublet = np.zeros(len(transcript_xy), dtype=bool)
+    transcript_doublet[transcript_pos] = True
+    return transcript_doublet, transcript_doublet.astype(int)
+
+
+def flag_cells_near_doublets(cell_xy, doublet_xy, distance_thresh, threads):
+    """
+    Distance of every cell to its nearest doublet (capped at NO_DOUBLET_DISTANCE), and
+    whether a doublet lies within distance_thresh. The minimum is exact (spatial.nearest),
+    and min <= thresh holds exactly when some doublet is within thresh.
+    """
+    _, distance = spatial.nearest(cell_xy, doublet_xy, threads)
+    doublet = distance <= distance_thresh
+    return doublet, doublet.astype(int), np.minimum(NO_DOUBLET_DISTANCE, distance)
+
 
 # window_sizes = for plotting. You can selected more windowsizes. This is just to zoom in or out for double plots.
 # num_doublet = is just the amount of doublet that will be plottet as examples.
@@ -149,28 +188,26 @@ def calc_doublet_score(
 
     # Link doublet detection back to spatial.
     # Based on a distance parameter say if a cell might be a doublet or not.
-    cell_dobulet_df = pd.DataFrame({
-        'x': [poly.centroid.x for poly in sdata['cell_boundaries']['geometry']],
-        'y': [poly.centroid.y for poly in sdata['cell_boundaries']['geometry']],
-        'doublet': [False] * sdata['table'].n_obs,
-        'wdoublet': [0] * sdata['table'].n_obs,
-        'doublet_distance': [100_000.0] * sdata['table'].n_obs
-    })
-
     corrected_doublet_df = doublet_df.copy()
 
     # Bring doublets back to the original coordinate system.
     corrected_doublet_df['x'] = doublet_df['x'] + min_x
     corrected_doublet_df['y'] = doublet_df['y'] + min_y
 
-    final_distances = np.array([100_000.0] * sdata['table'].n_obs)
-    for i, doublet in corrected_doublet_df.iterrows():
-        x1, y1 = doublet['x'], doublet['y']
-        distances = np.sqrt((cell_dobulet_df['x'] - x1)**2 + (cell_dobulet_df['y'] - y1)**2)
-        final_distances = np.minimum(final_distances, distances) 
-        cell_dobulet_df.loc[distances <= distance_thresh, 'doublet'] = True
-        cell_dobulet_df.loc[distances <= distance_thresh, 'wdoublet'] = 1
-    cell_dobulet_df['doublet_distance'] = final_distances
+    cell_dobulet_df = pd.DataFrame({
+        'x': [poly.centroid.x for poly in sdata['cell_boundaries']['geometry']],
+        'y': [poly.centroid.y for poly in sdata['cell_boundaries']['geometry']],
+    })
+    (
+        cell_dobulet_df['doublet'],
+        cell_dobulet_df['wdoublet'],
+        cell_dobulet_df['doublet_distance'],
+    ) = flag_cells_near_doublets(
+        cell_dobulet_df[['x', 'y']].to_numpy(),
+        corrected_doublet_df[['x', 'y']].to_numpy(),
+        distance_thresh,
+        threads,
+    )
 
     # Plot doublet density
     helperfuncs.plot_scatter_density_df(
@@ -192,13 +229,9 @@ def calc_doublet_score(
     transcript_coordinates_df = sdata.points[key_transcripts].compute()
 
     # Detect transcript that might belong to doublets
-    transcript_doublet = np.array([False] * len(transcript_coordinates_df))
-    transcript_wdoublet = np.array([0] * len(transcript_coordinates_df))
-    for i, doublet in corrected_doublet_df.iterrows():
-        x1, y1 = doublet['x'], doublet['y']
-        distances = np.sqrt((transcript_coordinates_df['x'] - x1)**2 + (transcript_coordinates_df['y'] - y1)**2)
-        transcript_doublet[distances <= distance_thresh] = True
-        transcript_wdoublet[distances <= distance_thresh] = 1
+    transcript_doublet, transcript_wdoublet = flag_transcripts_near_doublets(
+        transcript_coordinates_df, corrected_doublet_df, distance_thresh, threads
+    )
 
     # Write out transcript doublet information for later usage
     transcript_doublet_df = pd.DataFrame({

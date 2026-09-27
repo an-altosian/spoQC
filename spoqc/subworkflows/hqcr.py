@@ -532,7 +532,7 @@ def start_hqcr(sdata, spoqc_tmp_folder, imagedim, CONST, seed):
     clustering_for_hqcr(qc_domains_adata, figure_path, CONST, seed)
     
     # Here we combine available priors
-    priors.combine_priors.combine_priors_hqcr(sdata, figure_path, cell_df, qc_domains_adata, counts, CONST.DOULET_PRIOR_STD)
+    priors.combine_priors.combine_priors_hqcr(sdata, figure_path, cell_df, qc_domains_adata, counts, CONST.DOULET_PRIOR_STD, CONST.THREADS)
 
     # Cell quality probability refinement
     cell_quality_probability_refinement(
@@ -787,7 +787,8 @@ def refine_hqcr_with_celltype_thresholds(
         annotation_key,
         imagedim,
         image_type,
-        resolution
+        resolution,
+        threads
     ):
 
     # Lets first investigate what we can do with the celltype informed threhsholds.
@@ -801,7 +802,8 @@ def refine_hqcr_with_celltype_thresholds(
         threshold_right_dict, 
         annotation_key,
         qc_metric,
-        df_coords
+        df_coords,
+        threads
     )
     sdata['table'].obs['good_quality_probs_celltype'] = good_quality_probs_celltype
     sdata['table'].obs['bad_quality_probs_celltype'] = 1 - good_quality_probs_celltype
@@ -860,5 +862,6 @@ def start_hqcr_celltype(sdata, spoqc_tmp_folder, imagedim, CONST):
         CONST.ANNOTATION_KEY,
         imagedim,
         CONST.IMAGE_TYPE,
-        CONST.RESOLUTION
+        CONST.RESOLUTION,
+        CONST.THREADS
     )
