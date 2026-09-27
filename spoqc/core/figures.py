@@ -12,6 +12,7 @@ the pool. Only figure files go through here; no computed data is touched.
 import multiprocessing
 import os
 import pickle
+import warnings
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor
 from concurrent.futures import wait as wait_futures
 
@@ -32,6 +33,10 @@ IMAGE_SAMPLES_PER_PIXEL = 4
 # Figures submitted but not yet written, per worker, before save_figure blocks (bounds the
 # pickled bytes held in memory).
 MAX_PENDING_PER_WORKER = 2
+
+# mplot3d warns that set_rasterized on its collections "will be ignored", but Axes3D composites
+# them rasterised all the same: the 410k-point doublet 3D PDF goes from 92 MB to 0.3 MB.
+warnings.filterwarnings("ignore", message="Rasterization of .*Path3DCollection", category=UserWarning)
 
 _executor = None
 _max_pending = 0
