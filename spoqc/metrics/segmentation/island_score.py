@@ -22,7 +22,8 @@ def find_connected_groups(points: np.ndarray, distance_threshold: float, threads
         lowest-positioned point.
     """
     n_points = len(points)
-    pos_a, pos_b = spatial.pairs_within(points, points, distance_threshold, threads)
+    # The original decided with scipy's KDTree.query_ball_point (leafsize 10).
+    pos_a, pos_b = spatial.pairs_within(points, points, distance_threshold, threads, decide="tree", leafsize=10)
     adjacency = coo_matrix((np.ones(len(pos_a), dtype=bool), (pos_a, pos_b)), shape=(n_points, n_points))
     _, labels = connected_components(adjacency, directed=False)
     _, first_point = np.unique(labels, return_index=True)

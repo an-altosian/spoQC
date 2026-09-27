@@ -77,20 +77,31 @@ def _candidates(tree, query64, radius, threads):
     return np.repeat(hit, n_candidates[hit]), ref_pos
 
 
-def pairs_within(query_xy, ref_xy, r, threads: int, dtype=None, exclude_self: bool = False):
+def pairs_within(query_xy, ref_xy, r, threads: int, dtype=None, exclude_self: bool = False,
+                 decide: str = "formula", leafsize: int = 16):
     """
     Finds every (query, ref) pair with
         np.sqrt((ref_x - query_x) ** 2 + (ref_y - query_y) ** 2) <= r
-    evaluated in `dtype` on coordinates cast to `dtype`.
+    evaluated in `dtype` on coordinates cast to `dtype` (decide="formula"), or every pair
+    scipy's cKDTree.query_ball_point returns (decide="tree").
 
     That is the pandas expression `np.sqrt((df['x'] - x1) ** 2 + (df['y'] - y1) ** 2) <= r`
     with df[['x', 'y']] of dtype `dtype` and a float scalar (x1, y1): pandas casts the
     scalar to the Series dtype for the arithmetic, and compares with `r` exactly as numpy
     does, so pass `r` as the object the original compared with (e.g. a Python int).
 
-    A KD-tree over ref (queried with `threads` workers) proposes candidates within a padded
-    radius; the expression decides. The result is therefore identical to evaluating the
-    expression on every pair, for finite coordinates.
+    decide="formula": a KD-tree over ref (queried with `threads` workers) proposes candidates
+    within a padded radius; the expression decides. The result is therefore identical to
+    evaluating the expression on every pair.
+
+    decide="tree": for callers whose original decided with query_ball_point itself (a float64
+    sum of squares against r * r at the leaves, plus whole subtrees accepted by their bounds,
+    so the answer depends on the tree's leafsize). The tree is built exactly as the original
+    built it, cKDTree(ref as float64, leafsize=leafsize) with scipy's other defaults, and
+    queried with the float64 query points and r, no pad and no formula: the pairs are the
+    original's. `dtype` is not used.
+
+    Non-finite coordinates raise ValueError (scipy).
 
     Parameters:
         query_xy (np.ndarray): (n_query, 2) coordinates.
@@ -99,15 +110,24 @@ def pairs_within(query_xy, ref_xy, r, threads: int, dtype=None, exclude_self: bo
         threads (int): KD-tree query workers.
         dtype: arithmetic dtype; defaults to np.result_type(query_xy, ref_xy).
         exclude_self (bool): drop (i, i) pairs; for query_xy and ref_xy being the same points.
+        decide (str): "formula" or "tree", see above.
+        leafsize (int): KD-tree leaf size for decide="tree" (scipy KDTree default 10, cKDTree 16).
 
     Returns:
         Tuple[np.ndarray, np.ndarray]: query positions and ref positions, sorted by query
         position, then ref position. groupreduce.group_offsets(query_pos, n_query) groups them.
     """
-    query, ref, dtype = _cast(query_xy, ref_xy, dtype)
-    tree = cKDTree(ref.astype(np.float64))
-    query_pos, ref_pos = _candidates(tree, query.astype(np.float64), float(r) * (1 + _search_pad(dtype)), threads)
-    keep = _distances(query, ref, query_pos, ref_pos) <= r
+    if decide == "tree":
+        tree = cKDTree(np.asarray(ref_xy, dtype=np.float64), leafsize=leafsize)
+        query_pos, ref_pos = _candidates(tree, np.asarray(query_xy, dtype=np.float64), r, threads)
+        keep = np.ones(len(query_pos), dtype=bool)
+    elif decide == "formula":
+        query, ref, dtype = _cast(query_xy, ref_xy, dtype)
+        tree = cKDTree(ref.astype(np.float64))
+        query_pos, ref_pos = _candidates(tree, query.astype(np.float64), float(r) * (1 + _search_pad(dtype)), threads)
+        keep = _distances(query, ref, query_pos, ref_pos) <= r
+    else:
+        raise ValueError(f"decide must be 'formula' or 'tree', not {decide!r}")
     if exclude_self:
         keep &= query_pos != ref_pos
     query_pos, ref_pos = query_pos[keep], ref_pos[keep]

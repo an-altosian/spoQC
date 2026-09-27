@@ -1,9 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
+from threadpoolctl import threadpool_limits
 
 from ... import helperfuncs
-from ...core import spatial
+from ...core import groupreduce, spatial
 
 
 def get_border_scores(points, radius, step, threads):
@@ -11,10 +12,23 @@ def get_border_scores(points, radius, step, threads):
     Border score of every point: over rotations by multiples of `step` degrees, the largest
     |log2((1 + #neighbours right of the point) / (1 + #neighbours left of it))|, counting the
     points within `radius` (the point itself sits at 0 and counts on neither side).
+
+    The per-point original rotated its (k, 2) neighbour offsets with `diffs @ rotation_matrix`,
+    a BLAS call whose kernel (and so its rounding, e.g. FMA use) can depend on the shape.
+    Points with the same neighbour count k are stacked into one (points, k, 2) matmul: numpy
+    runs it as one (k, 2) @ (2, 2) product per point, with the original's shape, strides and
+    row order (neighbours ascending), so each product is the original's on any BLAS.
     """
     n_points = len(points)
-    point_pos, neighbour_pos = spatial.pairs_within(points, points, radius, threads)
-    diffs = points[neighbour_pos] - points[point_pos]  # (pairs, 2)
+    # The original decided with cKDTree.query_ball_point (leafsize 16).
+    point_pos, neighbour_pos = spatial.pairs_within(points, points, radius, threads, decide="tree", leafsize=16)
+    diffs = points[neighbour_pos] - points[point_pos]  # (pairs, 2), grouped by point
+    offsets = groupreduce.group_offsets(point_pos, n_points)
+    sizes = np.diff(offsets)
+    stacks = []
+    for k in np.unique(sizes[sizes > 0]):
+        same_size = np.flatnonzero(sizes == k)
+        stacks.append((same_size, diffs[offsets[same_size][:, None] + np.arange(k)]))
 
     angles = np.radians(np.arange(0, 360, step))
     rotation_matrices = np.stack([
@@ -23,17 +37,21 @@ def get_border_scores(points, radius, step, threads):
     ])
 
     def rotation_scores(rotation_matrix):
-        x_coords = (diffs @ rotation_matrix)[:, 0]
         # Add one to both sides to avoid inf; both sides are treated equally.
-        num_left = np.bincount(point_pos[x_coords > 0], minlength=n_points) + 1
-        num_right = np.bincount(point_pos[x_coords < 0], minlength=n_points) + 1
+        num_left = np.ones(n_points, dtype=np.int64)
+        num_right = np.ones(n_points, dtype=np.int64)
+        for same_size, stacked in stacks:
+            x_coords = (stacked @ rotation_matrix)[..., 0]
+            num_left[same_size] += np.count_nonzero(x_coords > 0, axis=1)
+            num_right[same_size] += np.count_nonzero(x_coords < 0, axis=1)
         # Only the magnitude matters, not the direction. The few distinct ratios go through
         # the scalar log2, as the per-point original did.
         ratios, ratio_idx = np.unique(num_left / num_right, return_inverse=True)
         return np.array([abs(np.log2(ratio)) for ratio in ratios])[ratio_idx]
 
-    # numpy releases the GIL in the matmul, comparisons and bincounts: one rotation per thread.
-    with ThreadPoolExecutor(threads) as executor:
+    # One rotation per thread (numpy releases the GIL); BLAS kept to one thread so the
+    # total stays within `threads`.
+    with threadpool_limits(limits=1, user_api="blas"), ThreadPoolExecutor(threads) as executor:
         return np.max(list(executor.map(rotation_scores, rotation_matrices)), axis=0)
 
 

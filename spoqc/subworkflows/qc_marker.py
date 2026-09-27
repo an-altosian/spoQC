@@ -265,6 +265,12 @@ def compute_radius_lists(rna_adata, radius, annotation_key, markers, figure_path
     return celltype_list, celltype_mean_list, celltype_maker_list, [radius] * len(celltype_mean_list)
 
 
+def split_threads(threads, n_tasks):
+    """(workers, threads per task) for running n_tasks side by side within `threads` in total."""
+    workers = max(1, min(threads, n_tasks))
+    return workers, max(1, threads // workers)
+
+
 def plot_marker_radius_line(sdata, figure_path, markers, name, threads, annotation_key, radi):
     
     rna_adata = sdata['table']
@@ -275,9 +281,10 @@ def plot_marker_radius_line(sdata, figure_path, markers, name, threads, annotati
     radius_celltype_maker_list = []
     radius_list = []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+    radius_workers, radius_threads = split_threads(threads, len(radi))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=radius_workers) as executor:
         futures = [executor.submit(compute_radius_lists, rna_adata, radius, annotation_key, 
-                                   markers, figure_path, name, threads) for radius in radi]
+                                   markers, figure_path, name, radius_threads) for radius in radi]
         for future in concurrent.futures.as_completed(futures):
             results = future.result()
             radius_celltype_list = radius_celltype_list + results[0]

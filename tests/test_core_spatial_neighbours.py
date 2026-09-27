@@ -564,3 +564,129 @@ def test_cells_near_doublets_detect_wrong_radius(rng, which):
         cells, doublets[["x", "y"]].to_numpy(), mutants(10)[which], THREADS
     )
     assert not np.array_equal(mutant[0], expected[0])
+
+
+# ---------------------------------------------------------------- review fixes
+
+def straddle_cloud(rng, radius, origin=5000.0, n_centres=60, n_angles=24):
+    """float32 centroids (Xenium-scale obsm) with pairs whose float64 squared distance lies
+    within one float32 ULP of radius**2 on either side: the float32 sqrt formula and the
+    tree's float64 sum of squares disagree on some of them."""
+    centres = (origin + rng.random((n_centres, 2)) * 400).astype(np.float32)
+    theta = rng.uniform(0, 2 * np.pi, (n_centres, n_angles))
+    jitter = rng.uniform(-1, 1, (n_centres, n_angles)) * np.spacing(np.float32(radius))
+    ring = centres[:, None, :] + (radius + jitter)[..., None] * np.stack((np.cos(theta), np.sin(theta)), -1)
+    xy = np.concatenate([centres, ring.reshape(-1, 2).astype(np.float32)])
+    return xy[rng.permutation(len(xy))]
+
+
+def straddle_pairs(rng, radius, origin=5000.0, n_pairs=2000, spacing=100.0):
+    """Isolated float32 pairs, one straddling point each: a changed decision changes the islands."""
+    grid = np.stack(np.meshgrid(np.arange(50), np.arange(n_pairs // 50)), -1).reshape(-1, 2)
+    centres = (origin + grid * spacing).astype(np.float32)
+    theta = rng.uniform(0, 2 * np.pi, len(centres))
+    dist = radius + rng.uniform(-1, 1, len(centres)) * np.spacing(np.float32(radius))
+    partners = (centres + dist[:, None] * np.stack((np.cos(theta), np.sin(theta)), -1)).astype(np.float32)
+    xy = np.concatenate([centres, partners])
+    return xy[rng.permutation(len(xy))]
+
+
+def formula_and_tree_disagree(xy, radius):
+    q_f, r_f = spatial.pairs_within(xy, xy, radius, THREADS)
+    q_t, r_t = spatial.pairs_within(xy, xy, radius, THREADS, decide="tree")
+    return not (np.array_equal(q_f, q_t) and np.array_equal(r_f, r_t))
+
+
+def test_straddle_fixture_separates_formula_from_tree(rng):
+    assert formula_and_tree_disagree(straddle_cloud(rng, 15), 15)
+    assert formula_and_tree_disagree(straddle_cloud(rng, 50), 50)
+
+
+@pytest.mark.parametrize("leafsize", [10, 16])
+def test_pairs_within_tree_is_query_ball_point(rng, leafsize):
+    xy = straddle_cloud(rng, 15)
+    tree = cKDTree(xy.astype(np.float64), leafsize=leafsize)
+    lists = tree.query_ball_point(xy.astype(np.float64), 15)
+    q, r = spatial.pairs_within(xy, xy, 15, THREADS, decide="tree", leafsize=leafsize)
+    offsets = np.searchsorted(q, np.arange(len(xy) + 1))
+    assert [r[a:b].tolist() for a, b in zip(offsets[:-1], offsets[1:])] == [sorted(x) for x in lists]
+
+
+@pytest.mark.parametrize("fixture", [straddle_cloud, straddle_pairs])
+def test_island_scores_match_original_on_float32_straddle(rng, fixture):
+    xy = fixture(rng, 15)
+    expected_idx, expected_score = original_island_scores(xy, 15)
+    actual_idx = island_score.find_connected_groups(xy, 15, THREADS)
+    np.testing.assert_array_equal(actual_idx, expected_idx, strict=True)
+    np.testing.assert_array_equal(np.bincount(actual_idx)[actual_idx], expected_score, strict=True)
+
+
+def test_island_scores_detect_formula_decision_on_float32_straddle(rng, monkeypatch):
+    """Mutant: deciding with the float32 sqrt formula (the first version) changes the islands."""
+    xy = straddle_pairs(rng, 15)
+    expected_idx, _ = original_island_scores(xy, 15)
+    formula = spatial.pairs_within
+    monkeypatch.setattr(spatial, "pairs_within", lambda q, r, rad, threads, **_: formula(q, r, rad, threads))
+    assert not np.array_equal(island_score.find_connected_groups(xy, 15, THREADS), expected_idx)
+
+
+def test_border_scores_detect_formula_decision_on_float32_straddle(rng, monkeypatch):
+    xy = straddle_cloud(rng, 50)
+    expected = original_border_scores(xy, 50, 10)
+    formula = spatial.pairs_within
+    monkeypatch.setattr(spatial, "pairs_within", lambda q, r, rad, threads, **_: formula(q, r, rad, threads))
+    assert not np.array_equal(border_score.get_border_scores(xy, 50, 10, THREADS), expected)
+
+
+@pytest.mark.parametrize("step", [10, 45])
+def test_border_scores_match_original_on_float32_straddle(rng, step):
+    xy = straddle_cloud(rng, 50)
+    expected = original_border_scores(xy, 50, step)
+    actual = border_score.get_border_scores(xy, 50, step, THREADS)
+    np.testing.assert_array_equal(actual, expected, strict=True)
+
+
+def test_border_scores_match_original_on_symmetric_offsets(rng):
+    """Neighbours at (d, -d) etc.: the 45-degree rotation puts them within rounding of 0, where an
+    FMA and a separately rounded product-sum can disagree in sign; the per-point matmul decides."""
+    base = ORIGIN + np.stack(np.meshgrid(np.arange(0, 120, 7.0), np.arange(0, 120, 7.0)), -1).reshape(-1, 2)
+    xy = np.concatenate([base, base + [3.0, -3.0], base + [-5.0, 5.0]])
+    for step in (5, 45):
+        expected = original_border_scores(xy, 12, step)
+        np.testing.assert_array_equal(border_score.get_border_scores(xy, 12, step, THREADS), expected, strict=True)
+
+
+@pytest.mark.parametrize("threads", [1, 2, 3, 4, 5, 8, 16, 33])
+@pytest.mark.parametrize("n_radii", [1, 2, 5, 7])
+def test_split_threads_stays_within_budget(threads, n_radii):
+    from spoqc.subworkflows.qc_marker import split_threads
+    workers, per_task = split_threads(threads, n_radii)
+    assert workers * per_task <= threads and workers >= 1 and per_task >= 1
+    assert workers == min(threads, n_radii)
+
+
+def test_border_matmuls_run_on_one_blas_thread(rng, monkeypatch):
+    from threadpoolctl import threadpool_info
+    seen = []
+    original = border_score.np.count_nonzero
+
+    def recording(*args, **kwargs):
+        seen.append(max((lib["num_threads"] for lib in threadpool_info() if lib["user_api"] == "blas"), default=1))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(border_score.np, "count_nonzero", recording)
+    border_score.get_border_scores(border_cloud(rng, np.float64)[:200], 50, 90, THREADS)
+    assert seen and max(seen) == 1
+
+
+@pytest.mark.parametrize("where", ["cell", "doublet"])
+def test_cells_near_doublets_fail_loudly_on_nan(rng, where):
+    """The original silently gave NaN doublet_distance; scipy's KD-tree rejects non-finite input."""
+    cells, doublets = doublet_case(rng)
+    doublet_xy = doublets[["x", "y"]].to_numpy()
+    if where == "cell":
+        cells[5, 0] = np.nan
+    else:
+        doublet_xy[3, 1] = np.nan
+    with pytest.raises(ValueError, match="finite"):
+        doublet_score.flag_cells_near_doublets(cells, doublet_xy, 10, THREADS)
