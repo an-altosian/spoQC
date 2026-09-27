@@ -4,11 +4,19 @@ The figure is pickled at the call site and a worker renders and writes every req
 the main thread goes straight on computing. Rendering (Agg rasterising, PDF path serialisation,
 kaleido export) is 70-95% of figure time and holds the GIL, so it needs processes, not threads.
 
-start(n) opens the pool, wait() blocks until every submitted figure is written and re-raises the
-first worker error (call it before anything reads a figure file back), stop() waits and closes
-the pool. Only figure files go through here; no computed data is touched.
+start(n) opens the pool; without it save_figure writes synchronously in this process.
+wait() blocks until every submitted figure is written and re-raises the first worker error: call
+it before anything lists, moves or reads a figure file. stop() waits and closes the pool;
+abort() cancels queued writes on the error path. Only figure files go through here; no computed
+data is touched.
+
+CPU budget: each worker is one render process plus, for plotly, its kaleido Chromium; the two run
+in turn, so a worker keeps about one core busy. The caller sizes the pool as a share of its
+thread budget (spoqc.cli: THREADS // THREADS_PER_FIGURE_WORKER) and should give the compute
+threads the rest.
 """
 
+import io
 import multiprocessing
 import os
 import pickle
@@ -17,30 +25,35 @@ from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor
 from concurrent.futures import wait as wait_futures
 
 import matplotlib
+import numpy as np
 from matplotlib.collections import Collection, QuadMesh
 from matplotlib.figure import Figure
 from matplotlib.image import AxesImage
 
+# Threads of the run's budget per figure worker (see the CPU budget note above).
+THREADS_PER_FIGURE_WORKER = 4
 # Collections with at least this many elements are rasterised in PDF output. Vector PDF costs
 # ~0.1 ms per marker (44 s and 92 MB for the 410k-point doublet 3D scatter); rasterised it is
 # 5 s and 0.3 MB, drawn at the savefig dpi like the PNG. Axes and text stay vector.
 RASTERIZE_MIN_ELEMENTS = 10_000
-# Images with more samples than output pixels are decimated (by stride) to this many samples per
-# output pixel before pickling; the renderer antialiases what is left down to output pixels (4
-# keeps a noise-texture image within 8/255 mean of the full-res render; 2 was 13/255). A 913 Mpx
-# imshow otherwise pickles ~4-7 GB per figure and spends minutes in _resample for PNG and PDF each.
+# Float images with more samples than output pixels are block-averaged down to this many samples
+# per output pixel (per axis) in the pickled copy; the renderer antialiases the rest down to
+# output pixels. A 913 Mpx imshow otherwise pickles ~4 GB per figure and spends minutes in
+# _resample for PNG and PDF each. Integer, bool and label images and 'nearest'/'none'
+# interpolation are never reduced: averaging would change what they show.
 IMAGE_SAMPLES_PER_PIXEL = 4
-# Figures submitted but not yet written, per worker, before save_figure blocks (bounds the
-# pickled bytes held in memory).
-MAX_PENDING_PER_WORKER = 2
+# Pickled figure bytes submitted but not yet written before save_figure blocks. Each blob is held
+# about twice (here and in the pipe to the worker). A single larger figure is still submitted.
+MAX_PENDING_BYTES = 2 * 1024**3
 
 # mplot3d warns that set_rasterized on its collections "will be ignored", but Axes3D composites
 # them rasterised all the same: the 410k-point doublet 3D PDF goes from 92 MB to 0.3 MB.
-warnings.filterwarnings("ignore", message="Rasterization of .*Path3DCollection", category=UserWarning)
+warnings.filterwarnings(
+    "ignore", message="Rasterization of .*Path3DCollection", category=UserWarning
+)
 
 _executor = None
-_max_pending = 0
-_pending = set()
+_pending = {}  # future -> pickled bytes
 
 
 def _element_count(collection):
@@ -49,23 +62,82 @@ def _element_count(collection):
     return max(len(collection.get_offsets()), len(collection.get_paths()))
 
 
-def _decimate_images(fig, dpi):
+def _block_mean(a, k):
+    """Mean over k x k blocks (the last block per axis may be smaller), masked samples excluded."""
+    starts = [np.arange(0, n, k) for n in a.shape[:2]]
+
+    def block_sum(x):
+        return np.add.reduceat(
+            np.add.reduceat(x, starts[0], axis=0, dtype=np.float64), starts[1], axis=1
+        )
+
+    data = np.ma.getdata(a)
+    if np.ma.getmask(a) is np.ma.nomask:
+        sizes = [np.diff(np.append(s, n)) for s, n in zip(starts, a.shape[:2])]
+        count = np.multiply.outer(*sizes).reshape(
+            len(sizes[0]), len(sizes[1]), *([1] * (a.ndim - 2))
+        )
+        return (block_sum(data) / count).astype(a.dtype)
+    valid = ~np.ma.getmaskarray(a)
+    count = block_sum(valid)
+    mean = block_sum(np.where(valid, data, 0)) / np.maximum(count, 1)
+    return np.ma.masked_array(mean.astype(a.dtype), mask=count == 0)
+
+
+def _reduced_images(fig, dpi):
+    """{id(image array): block-averaged copy} for float images far denser than the output."""
+    reduced = {}
     for image in fig.findobj(AxesImage):
-        ax = image.axes
-        left, right, bottom, top = image.get_extent()
-        (x0, x1), (y0, y1) = sorted(ax.get_xlim()), sorted(ax.get_ylim())
-        rows, cols = image.get_array().shape[:2]
-        visible_cols = cols * (min(x1, max(left, right)) - max(x0, min(left, right))) / abs(right - left)
-        visible_rows = rows * (min(y1, max(bottom, top)) - max(y0, min(bottom, top))) / abs(top - bottom)
-        box = ax.get_position()
-        out_cols = box.width * fig.get_figwidth() * dpi
-        out_rows = box.height * fig.get_figheight() * dpi
-        step = int(min(visible_cols / out_cols, visible_rows / out_rows) / IMAGE_SAMPLES_PER_PIXEL)
-        if step > 1:  # the norm keeps the vmin/vmax imshow took from the full array
-            image.set_data(image.get_array()[::step, ::step])
+        a = image.get_array()
+        if not np.issubdtype(a.dtype, np.floating) or image.get_interpolation() in (
+            "nearest",
+            "none",
+        ):
+            continue
+        # Display extent of the whole image through its own transform (world or pixel units,
+        # zoomed or translated alike), at the figure dpi; the output is at `dpi`.
+        box = image.get_window_extent()
+        scale = dpi / fig.dpi
+        samples_per_pixel = min(
+            a.shape[1] / (abs(box.width) * scale),
+            a.shape[0] / (abs(box.height) * scale),
+        )
+        k = int(round(samples_per_pixel / IMAGE_SAMPLES_PER_PIXEL, 6))  # display extents carry float noise
+        if k > 1:  # the norm keeps the vmin/vmax imshow took from the full array
+            reduced[id(a)] = _block_mean(a, k)
+    return reduced
 
 
-def _write(blob, rc, paths, kwargs):
+def _same(obj):
+    return obj
+
+
+class _SubstitutingPickler(pickle.Pickler):
+    """Pickles `replacements[id(obj)]` in place of obj, leaving the caller's figure untouched."""
+
+    def __init__(self, file, replacements):
+        super().__init__(file, protocol=pickle.HIGHEST_PROTOCOL)
+        self._replacements = replacements
+
+    def reducer_override(self, obj):
+        if id(obj) in self._replacements:
+            return _same, (self._replacements[id(obj)],)
+        return NotImplemented
+
+
+def _pickle(fig, exact, kwargs):
+    if exact or not isinstance(fig, Figure):
+        return pickle.dumps(fig, protocol=pickle.HIGHEST_PROTOCOL)
+    dpi = kwargs.get("dpi", matplotlib.rcParams["savefig.dpi"])
+    replacements = _reduced_images(fig, fig.dpi if dpi == "figure" else dpi)
+    if not replacements:
+        return pickle.dumps(fig, protocol=pickle.HIGHEST_PROTOCOL)
+    buffer = io.BytesIO()
+    _SubstitutingPickler(buffer, replacements).dump(fig)
+    return buffer.getvalue()
+
+
+def _write(blob, rc, paths, exact, kwargs):
     fig = pickle.loads(blob)
     if rc is None:  # plotly
         for path in paths:
@@ -73,48 +145,51 @@ def _write(blob, rc, paths, kwargs):
         return
     with matplotlib.rc_context(rc):
         for path in paths:
-            if os.fspath(path).lower().endswith(".pdf"):
+            if not exact and os.fspath(path).lower().endswith(".pdf"):
                 for collection in fig.findobj(Collection):
                     if _element_count(collection) >= RASTERIZE_MIN_ELEMENTS:
                         collection.set_rasterized(True)  # no effect on the Agg PNG
             fig.savefig(path, **kwargs)
 
 
-def save_figure(fig, *paths, **kwargs):
+def save_figure(fig, *paths, exact=False, **kwargs):
     """Write a matplotlib or plotly `fig` to each of `paths` (format from the extension).
 
-    `kwargs` go to every savefig / write_image call. Returns once the figure is pickled; the
-    files exist after wait(). The figure is taken as finished: images in it larger than the
-    output are decimated in place.
+    `kwargs` go to every savefig / write_image call. With a pool, this returns once the figure is
+    pickled and the files exist after wait(); the caller's figure is never modified.
+    `exact=True` writes the figure as savefig would, without image reduction or PDF
+    rasterising: use it for files that are read back as data.
     """
-    rc = None
-    if isinstance(fig, Figure):
-        rc = dict(matplotlib.rcParams)
-        dpi = kwargs.get("dpi", rc["savefig.dpi"])
-        _decimate_images(fig, fig.dpi if dpi == "figure" else dpi)
-    blob = pickle.dumps(fig, protocol=pickle.HIGHEST_PROTOCOL)
-    done = {f for f in _pending if f.done()}
-    if len(_pending) >= _max_pending:
-        done, _ = wait_futures(_pending, return_when=FIRST_COMPLETED)
-    for future in done:
-        _pending.discard(future)
+    rc = dict(matplotlib.rcParams) if isinstance(fig, Figure) else None
+    blob = _pickle(fig, exact, kwargs)
+    if _executor is None:
+        _write(blob, rc, paths, exact, kwargs)
+        return
+    for future in [f for f in _pending if f.done()]:
+        del _pending[future]
         future.result()
-    _pending.add(_executor.submit(_write, blob, rc, paths, kwargs))
+    while _pending and sum(_pending.values()) + len(blob) > MAX_PENDING_BYTES:
+        done, _ = wait_futures(_pending, return_when=FIRST_COMPLETED)
+        for future in done:
+            del _pending[future]
+            future.result()
+    _pending[_executor.submit(_write, blob, rc, paths, exact, kwargs)] = len(blob)
 
 
 def start(workers):
     """Open a pool of `workers` spawned processes for save_figure()."""
-    global _executor, _max_pending
+    global _executor
     _executor = ProcessPoolExecutor(
         max_workers=workers, mp_context=multiprocessing.get_context("spawn")
     )
-    _max_pending = workers * MAX_PENDING_PER_WORKER
 
 
 def wait():
     """Block until every submitted figure is written; re-raise the first worker error."""
     while _pending:
-        _pending.pop().result()
+        future = next(iter(_pending))
+        del _pending[future]
+        future.result()
 
 
 def stop():
@@ -125,3 +200,11 @@ def stop():
     finally:
         _executor.shutdown()
         _executor = None
+
+
+def abort():
+    """On the error path: drop queued writes, let running ones finish, close the pool."""
+    global _executor
+    _pending.clear()
+    _executor.shutdown(cancel_futures=True)
+    _executor = None

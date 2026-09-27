@@ -29,6 +29,7 @@ from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 from scipy.ndimage import gaussian_filter
 from scipy.stats import norm
+from spoqc.core import figures
 from spoqc.core.figures import save_figure
 
 class ImageDimStruct(NamedTuple):
@@ -67,6 +68,7 @@ _CMAP_DENSITY = mcolors.LinearSegmentedColormap.from_list(
 # The list remove_from_moving are files which should not be sorted.
 # The parameter prefix_or_suffix sets if you want to sort by prefix or suffix.
 def sort_files(data_path, prefix_or_suffix, remove_from_moving):
+    figures.wait()  # every figure in data_path must have landed before it is listed and moved
     s = 0
     if ( prefix_or_suffix == 'suffix' ):
         s = 1

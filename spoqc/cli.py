@@ -345,9 +345,18 @@ def main(argv: list[str] | None = None) -> None:
         print(f'Attribute Name: {attr_name}')
         print(f'Attribute Value: {attr_value}')
 
-    # Figures are written by CONST.THREADS worker processes while the main thread computes on.
-    figures.start(CONST.THREADS)
+    # Figures are written by worker processes while the main thread computes on; they get a share
+    # of the thread budget (see spoqc.core.figures).
+    figures.start(max(1, CONST.THREADS // figures.THREADS_PER_FIGURE_WORKER))
+    try:
+        run(CONST)
+    except BaseException:
+        figures.abort()
+        raise
+    figures.stop()
 
+
+def run(CONST):
     # Seeds (!!! DO NOT CHANGE THIS SEED !!!)
     seed=123
     random.seed(seed)
@@ -549,7 +558,6 @@ def main(argv: list[str] | None = None) -> None:
         print('[NOTE] Domain QC')
         figure_path = f'{CONST.FIGURE_PATH}/whole_slide_qc/'
         subworkflows.qc_wsi.generate_input(sdata, figure_path, CONST)
-        figures.wait()  # the next call reads the PNG generate_input just wrote
         subworkflows.qc_wsi.measure_stripe_thickness_and_black_area(
             f'{figure_path}/input_domain_thickness_analysis.png',
             np.array([68,1,84]),
@@ -770,7 +778,7 @@ def main(argv: list[str] | None = None) -> None:
     ###### FINAL REPORT ######
     ##########################
     # Low resources, fast
-    figures.stop()  # the report reads the figures
+    figures.wait()  # the report reads the figures
     if ( CONST.STEP in ['all', 'final_report'] ):
         subworkflows.final_report.create_final_report(CONST.FIGURE_PATH, stainings, CONST.GENERATE_REPORT_DOC)
     print("[FINISH]")

@@ -10,6 +10,7 @@ from typing import List, Tuple, Any
 from concurrent.futures import ProcessPoolExecutor
 
 from .. import helperfuncs
+from spoqc.core import figures
 from spoqc.core.figures import save_figure
 
 def measure_stripe_thickness_and_black_area(image_path: str, 
@@ -56,6 +57,7 @@ def measure_stripe_thickness_and_black_area(image_path: str,
             upper_bound_background[i] = 255
 
     # Read the image
+    figures.wait()  # image_path is a figure (generate_input) that may still be in flight
     image = cv2.imread(image_path)
     # Turn background color to white
     mask = cv2.inRange(image, lower_bound_background, upper_bound_background)
@@ -147,5 +149,6 @@ def generate_input(sdata, figure_path, CONST):
     )
     ax.axis('off')
     ax.invert_yaxis()
-    save_figure(plt.gcf(), f'{figure_path}/input_domain_thickness_analysis.png', f'{figure_path}/input_domain_thickness_analysis.pdf', bbox_inches='tight')
+    # exact: the PNG is read back to compute norm_adjusted_black_area
+    save_figure(plt.gcf(), f'{figure_path}/input_domain_thickness_analysis.png', f'{figure_path}/input_domain_thickness_analysis.pdf', exact=True, bbox_inches='tight')
     plt.close()
