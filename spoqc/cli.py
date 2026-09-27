@@ -25,6 +25,7 @@ from spoqc import general
 from spoqc import hqr
 from spoqc import helperfuncs
 from spoqc import process_datasets
+from spoqc import figwriter
 from spoqc import folder_structure
 from spoqc import plot_config
 from spoqc import subworkflows
@@ -344,6 +345,9 @@ def main(argv: list[str] | None = None) -> None:
         print(f'Attribute Name: {attr_name}')
         print(f'Attribute Value: {attr_value}')
 
+    # Figures are written by CONST.THREADS worker processes while the main thread computes on.
+    figwriter.start(CONST.THREADS)
+
     # Seeds (!!! DO NOT CHANGE THIS SEED !!!)
     seed=123
     random.seed(seed)
@@ -545,6 +549,7 @@ def main(argv: list[str] | None = None) -> None:
         print('[NOTE] Domain QC')
         figure_path = f'{CONST.FIGURE_PATH}/whole_slide_qc/'
         subworkflows.qc_wsi.generate_input(sdata, figure_path, CONST)
+        figwriter.wait()  # the next call reads the PNG generate_input just wrote
         subworkflows.qc_wsi.measure_stripe_thickness_and_black_area(
             f'{figure_path}/input_domain_thickness_analysis.png',
             np.array([68,1,84]),
@@ -765,6 +770,7 @@ def main(argv: list[str] | None = None) -> None:
     ###### FINAL REPORT ######
     ##########################
     # Low resources, fast
+    figwriter.stop()  # the report reads the figures
     if ( CONST.STEP in ['all', 'final_report'] ):
         subworkflows.final_report.create_final_report(CONST.FIGURE_PATH, stainings, CONST.GENERATE_REPORT_DOC)
     print("[FINISH]")

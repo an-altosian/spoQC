@@ -12,6 +12,7 @@ from plotly.subplots import make_subplots
 from esda.moran import Moran
 from libpysal.weights import Queen
 
+from .. import figwriter
 from .. import helperfuncs
 
 
@@ -198,8 +199,10 @@ def run_qc_model(sdata, figure_path, CONST):
         df[f'PC{i}'] = X_pca[:,i]
 
     sc.pl.pca_variance_ratio(rna_adata, n_pcs=n_comps, log=True, save='.png')
+    figwriter.wait()  # scanpy's savefig must land before the move
     shutil.move("figures/pca_variance_ratio.png", f"{figure_path}/pca_variance_ratio.png")
     sc.pl.pca_variance_ratio(rna_adata, n_pcs=n_comps, log=True, save='.pdf')
+    figwriter.wait()  # scanpy's savefig must land before the move
     shutil.move("figures/pca_variance_ratio.pdf", f"{figure_path}/pca_variance_ratio.pdf")
 
     plot_pca_scatter(df, figure_path, npcs)
