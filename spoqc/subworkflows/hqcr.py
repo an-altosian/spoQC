@@ -14,6 +14,7 @@ from scipy.stats import median_abs_deviation
 from .. import hqr
 from .. import helperfuncs
 from .. import priors
+from spoqc.core.figures import save_figure
 
 # Function to print all HQCRs
 def plot_hqcr(sdata, figure_path, min_number_good_cells_hqcr, minimum_number_of_total_cells):
@@ -135,8 +136,7 @@ def generate_hqcr_html(figure_path, df_plot, cat, ncat, catnames, qc_metrics):
         helperfuncs.apply_general_plotly_layout(fig, True)
 
         figures.append(fig)
-        fig.write_image(f"{figure_path}/{plotname}_{level}.png", scale=3)
-        fig.write_image(f"{figure_path}/{plotname}_{level}.pdf", scale=3)
+        save_figure(fig, f"{figure_path}/{plotname}_{level}.png", f"{figure_path}/{plotname}_{level}.pdf", scale=3)
 
     with open(f'{figure_path}/hqcr_{cat}.html', 'w') as f:
         for fig in figures:
@@ -718,8 +718,7 @@ def celltype_artefact_analysis_for_hqcr(sdata, figure_path, cell_df, annotation_
                 )
                 fig.update_layout(width=800, height=2500, violinmode='overlay')
                 figures.append(fig)
-                fig.write_image(f"{figure_path}/split_violinplot_{qc_metric}.png", scale=3)
-                fig.write_image(f"{figure_path}/split_violinplot_{qc_metric}.pdf", scale=3)
+                save_figure(fig, f"{figure_path}/split_violinplot_{qc_metric}.png", f"{figure_path}/split_violinplot_{qc_metric}.pdf", scale=3)
 
                 # Bar plot of artefact scores
                 df_artefact_scores = pd.DataFrame({'celltype': celltypes, 'artefact_scores': artefact_scores })
@@ -731,7 +730,7 @@ def celltype_artefact_analysis_for_hqcr(sdata, figure_path, cell_df, annotation_
                     title=f'Artefact Scores per Celltype for {qc_metric}'
                 )
                 figures.append(fig_bar)
-                fig_bar.write_image(f"{figure_path}/barplot_artefact_scores_{qc_metric}.png", scale=3)
+                save_figure(fig_bar, f"{figure_path}/barplot_artefact_scores_{qc_metric}.png", scale=3)
 
             elif qc_metric in ['convexity_metric_cell', 'convexity_min_nuceli', 'border_scores',
                             'thinness_score', 'island_score', 'cell_overlap_area',
@@ -746,8 +745,7 @@ def celltype_artefact_analysis_for_hqcr(sdata, figure_path, cell_df, annotation_
                 )
                 fig.update_layout(width=800, height=2500, violinmode='overlay')
                 figures.append(fig)
-                fig.write_image(f"{figure_path}/split_violinplot_{qc_metric}.png", scale=3)
-                fig.write_image(f"{figure_path}/split_violinplot_{qc_metric}.pdf", scale=3)
+                save_figure(fig, f"{figure_path}/split_violinplot_{qc_metric}.png", f"{figure_path}/split_violinplot_{qc_metric}.pdf", scale=3)
 
             else:
                 print(f"[NOTE] {qc_metric} is not implemented yet for doublet and nucelus free cell check.")
@@ -762,8 +760,7 @@ def celltype_artefact_analysis_for_hqcr(sdata, figure_path, cell_df, annotation_
             title=f'Artefact Scores per Celltype for all considered QC metrices'
         )
         figures.append(fig_bar)
-        fig_bar.write_image(f"{figure_path}/barplot_total_artefact_scores.png", scale=3)
-        fig_bar.write_image(f"{figure_path}/barplot_total_artefact_scores.pdf", scale=3)
+        save_figure(fig_bar, f"{figure_path}/barplot_total_artefact_scores.png", f"{figure_path}/barplot_total_artefact_scores.pdf", scale=3)
 
         # Generate plotly HTML
         html_content = ''.join(fig.to_html(full_html=False) for fig in figures)

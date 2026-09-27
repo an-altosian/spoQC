@@ -8,6 +8,7 @@ import zarr
 from zarr.codecs import BloscCodec
 
 from .. import helperfuncs
+from spoqc.core.figures import save_figure
 
 def first_version_loopy_belief_propagation(
         prob_map_np,
@@ -266,7 +267,6 @@ def visualize_markov_calculation(average_cell_probability_image, labels, figure_
     plt.imshow(labels, cmap='gray')
     helperfuncs.add_manual_legend(legend_dict={"mask": "#FFFFFF", "low Q": "#000000"})
 
-    plt.savefig(f'{figure_path}/markov_random_field_calculations.png', bbox_inches='tight')
-    plt.savefig(f'{figure_path}/markov_random_field_calculations.pdf', bbox_inches='tight')
+    save_figure(plt.gcf(), f'{figure_path}/markov_random_field_calculations.png', f'{figure_path}/markov_random_field_calculations.pdf', bbox_inches='tight')
     plt.close()
 

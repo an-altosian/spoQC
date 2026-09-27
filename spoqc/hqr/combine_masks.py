@@ -8,6 +8,7 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib_venn import venn3
 
 from .. import helperfuncs
+from spoqc.core.figures import save_figure
 
 def start_combining_masks(
         figure_path,
@@ -111,8 +112,7 @@ def start_combining_masks(
             ax.set_xlabel(f'{m}_beliefs')
             ax.set_ylabel('Log count')
             ax.set_title(f'Distribution of {m} beliefs')
-            fig.savefig(os.path.join(figure_path, f'hist_{m}_beliefs{type_of_belief}_log.png'), bbox_inches='tight')
-            fig.savefig(os.path.join(figure_path, f'hist_{m}_beliefs{type_of_belief}_log.pdf'), bbox_inches='tight')
+            save_figure(fig, os.path.join(figure_path, f'hist_{m}_beliefs{type_of_belief}_log.png'), os.path.join(figure_path, f'hist_{m}_beliefs{type_of_belief}_log.pdf'), bbox_inches='tight')
             plt.close(fig)
 
             fig = None
@@ -121,8 +121,7 @@ def start_combining_masks(
             ax.set_xlabel(f'{m}_beliefs')
             ax.set_ylabel('Count')
             ax.set_title(f'Distribution of {m} beliefs')
-            fig.savefig(os.path.join(figure_path, f'hist_{m}_beliefs{type_of_belief}.png'), bbox_inches='tight')
-            fig.savefig(os.path.join(figure_path, f'hist_{m}_beliefs{type_of_belief}.pdf'), bbox_inches='tight')
+            save_figure(fig, os.path.join(figure_path, f'hist_{m}_beliefs{type_of_belief}.png'), os.path.join(figure_path, f'hist_{m}_beliefs{type_of_belief}.pdf'), bbox_inches='tight')
             plt.close(fig)
 
 
@@ -172,8 +171,7 @@ def start_combining_masks(
         subsets_pct = {key: np.round(value * 100, 2) for key, value in subsets.items()}
         venn = venn3(subsets_pct, set_labels=('HQCR', 'HQPR', 'HQTR'))
         plt.title(f"Venndiagram of masks with {np.round(uncovered * 100,2)}% uncovered area")
-        plt.savefig(f'{figure_path}/venn_combined_masks{type_of_belief}.png', bbox_inches='tight', dpi=300)
-        plt.savefig(f'{figure_path}/venn_combined_masks{type_of_belief}.pdf', bbox_inches='tight', dpi=300)
+        save_figure(plt.gcf(), f'{figure_path}/venn_combined_masks{type_of_belief}.png', f'{figure_path}/venn_combined_masks{type_of_belief}.pdf', bbox_inches='tight', dpi=300)
         plt.close()
 
         combined_beliefs = beliefs_df['hqcr_beliefs'] + beliefs_df[f'hqpr_{staining}_beliefs'] + beliefs_df['hqtr_beliefs']

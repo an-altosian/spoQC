@@ -29,6 +29,7 @@ from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 from scipy.ndimage import gaussian_filter
 from scipy.stats import norm
+from spoqc.core.figures import save_figure
 
 class ImageDimStruct(NamedTuple):
     bb_xmin: int
@@ -235,7 +236,7 @@ def plotly_save_as_png(fig, plot_path, w=4, h=3, dpi=300):
     width_px  = w * dpi
     height_px = h * dpi
     fig.update_layout(margin=dict(l=40, r=20, t=30, b=40))
-    fig.write_image(plot_path, width=width_px, height=height_px, scale=1)
+    save_figure(fig, plot_path, width=width_px, height=height_px, scale=1)
     
 
 def generate_distinct_colors(num_colors: int) -> List[str]:
@@ -381,8 +382,7 @@ def plot_density_by_category(df: pd.DataFrame, key: str, figure_path: Union[str,
             plt.gca().invert_yaxis()
 
     plt.tight_layout()
-    plt.savefig(f'{figure_path}/densityplot_{key}.png', bbox_inches='tight', dpi=300)
-    plt.savefig(f'{figure_path}/densityplot_{key}.pdf', bbox_inches='tight', dpi=300)
+    save_figure(plt.gcf(), f'{figure_path}/densityplot_{key}.png', f'{figure_path}/densityplot_{key}.pdf', bbox_inches='tight', dpi=300)
     plt.close()
 
 # Same as kde but scatter plot
@@ -424,8 +424,7 @@ def plot_scatter_by_category(df: pd.DataFrame, key: str, figure_path: str, suffi
     plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0., markerscale=1)
 
     plt.tight_layout()
-    plt.savefig(f'{figure_path}/scatterplot_{key}_{suffix}.png', bbox_inches='tight', dpi=300)
-    plt.savefig(f'{figure_path}/scatterplot_{key}_{suffix}.pdf', bbox_inches='tight', dpi=300)
+    save_figure(plt.gcf(), f'{figure_path}/scatterplot_{key}_{suffix}.png', f'{figure_path}/scatterplot_{key}_{suffix}.pdf', bbox_inches='tight', dpi=300)
     plt.close()
 
 
@@ -504,10 +503,7 @@ def plot_scatter_density_by_category_df(
 
     plt.tight_layout()
     if figure_path is not None:
-        plt.savefig(f'{figure_path}/scatterplot_densityplot_{key}_{suffix}.png',
-                    bbox_inches='tight', dpi=300)
-        plt.savefig(f'{figure_path}/scatterplot_densityplot_{key}_{suffix}.pdf',
-                    bbox_inches='tight', dpi=300)
+        save_figure(plt.gcf(), f'{figure_path}/scatterplot_densityplot_{key}_{suffix}.png', f'{figure_path}/scatterplot_densityplot_{key}_{suffix}.pdf', bbox_inches='tight', dpi=300)
     plt.close()
 
 
@@ -561,8 +557,7 @@ def plot_density(adata: AnnData, key: str, figure_path: str, flip=False) -> None
         plt.gca().invert_yaxis()
 
     plt.tight_layout()
-    plt.savefig(f'{figure_path}/densityplot_{key}.png', bbox_inches='tight', dpi=300)
-    plt.savefig(f'{figure_path}/densityplot_{key}.pdf', bbox_inches='tight', dpi=300)
+    save_figure(plt.gcf(), f'{figure_path}/densityplot_{key}.png', f'{figure_path}/densityplot_{key}.pdf', bbox_inches='tight', dpi=300)
     plt.close()
 
 
@@ -619,8 +614,7 @@ def plot_scatter(adata: AnnData, figure_path: str, suffix: str, rect: Optional[A
     plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0., markerscale=1)
 
     plt.tight_layout()
-    plt.savefig(f'{figure_path}/scatterplot_{suffix}.png', bbox_inches='tight', dpi=300)
-    plt.savefig(f'{figure_path}/scatterplot_{suffix}.pdf', bbox_inches='tight', dpi=300)
+    save_figure(plt.gcf(), f'{figure_path}/scatterplot_{suffix}.png', f'{figure_path}/scatterplot_{suffix}.pdf', bbox_inches='tight', dpi=300)
     plt.close()
 
 
@@ -701,8 +695,7 @@ def plot_scatter_density(adata: AnnData, figure_path: str, suffix: str,
         plt.gca().invert_yaxis()
     
     plt.tight_layout()
-    plt.savefig(f'{figure_path}/scatterplot_densityplot_{suffix}.png', bbox_inches='tight', dpi=300)
-    plt.savefig(f'{figure_path}/scatterplot_densityplot_{suffix}.pdf', bbox_inches='tight', dpi=300)
+    save_figure(plt.gcf(), f'{figure_path}/scatterplot_densityplot_{suffix}.png', f'{figure_path}/scatterplot_densityplot_{suffix}.pdf', bbox_inches='tight', dpi=300)
     plt.close()
 
 
@@ -755,15 +748,13 @@ def plot_scatter_density_df(df: pd.DataFrame, figure_path: str, suffix: str,
         plt.gca().invert_yaxis()
     
     plt.tight_layout()
-    plt.savefig(f'{figure_path}/scatterplot_densityplot_{suffix}.png', bbox_inches='tight', dpi=300)
-    plt.savefig(f'{figure_path}/scatterplot_densityplot_{suffix}.pdf', bbox_inches='tight', dpi=300)
+    save_figure(plt.gcf(), f'{figure_path}/scatterplot_densityplot_{suffix}.png', f'{figure_path}/scatterplot_densityplot_{suffix}.pdf', bbox_inches='tight', dpi=300)
     plt.close()
 
 
 def plot_original_image_cell_circles(sdata, figure_path, suffix):
     sdata.pl.render_shapes(elements="cell_circles", scale=0.3).pl.show(dpi=300, show=False)
-    plt.savefig(f'{figure_path}/image_cell_circles_{suffix}.png')
-    plt.savefig(f'{figure_path}/image_cell_circles_{suffix}.pdf')
+    save_figure(plt.gcf(), f'{figure_path}/image_cell_circles_{suffix}.png', f'{figure_path}/image_cell_circles_{suffix}.pdf')
     plt.close()
 
 def min_value_shift(data: Union[np.ndarray, list]) -> np.ndarray:
@@ -915,8 +906,7 @@ def plot_pixels(
     if ( legend_dict ):
         add_manual_legend(legend_dict, points)
 
-    plt.savefig(f'{figure_path}/imageplot_{suffix}.png', bbox_inches='tight', dpi=300)
-    plt.savefig(f'{figure_path}/imageplot_{suffix}.pdf', bbox_inches='tight', dpi=300)
+    save_figure(plt.gcf(), f'{figure_path}/imageplot_{suffix}.png', f'{figure_path}/imageplot_{suffix}.pdf', bbox_inches='tight', dpi=300)
     plt.close()
 
 
@@ -1030,8 +1020,7 @@ def test_resolutions_leiden(
     for res_value in ss['res'].unique():  # Assuming 'res' contains the breakpoints
         plt.axvline(x=res_value, color='grey', linestyle='--', alpha=0.7)  # Adding vertical lines
     plt.xticks(ss['res'].unique())  # Ensure all 'res' values are shown on the x-axis
-    plt.savefig(f'{figure_path}/test_resolutions_leiden_clustering_ss.png')
-    plt.savefig(f'{figure_path}/test_resolutions_leiden_clustering_ss.pdf')
+    save_figure(plt.gcf(), f'{figure_path}/test_resolutions_leiden_clustering_ss.png', f'{figure_path}/test_resolutions_leiden_clustering_ss.pdf')
     plt.close()
 
     if ( annotation_key or k):
@@ -1054,8 +1043,7 @@ def test_resolutions_leiden(
         plt.title(f'Annotation had {title} celltypes')
         plt.xticks(ss['res'].unique())  # ensure all 'res' values appear
         plt.tight_layout()
-        plt.savefig(f'{figure_path}/test_resolutions_leiden_clustering_num_clusters.png')
-        plt.savefig(f'{figure_path}/test_resolutions_leiden_clustering_num_clusters.pdf')
+        save_figure(plt.gcf(), f'{figure_path}/test_resolutions_leiden_clustering_num_clusters.png', f'{figure_path}/test_resolutions_leiden_clustering_num_clusters.pdf')
         plt.close()
 
     return win_res
@@ -1136,8 +1124,7 @@ def thread_split_list(data, t):
 def dummyplot(figure_path, suffix):
     plt.figure(figsize=(13, 10))
     scatter = sns.scatterplot(x=[1,2], y=[1,2])
-    plt.savefig(f'{figure_path}/dummy_plot_{suffix}.png', bbox_inches='tight')
-    plt.savefig(f'{figure_path}/dummy_plot_{suffix}.pdf', bbox_inches='tight')
+    save_figure(plt.gcf(), f'{figure_path}/dummy_plot_{suffix}.png', f'{figure_path}/dummy_plot_{suffix}.pdf', bbox_inches='tight')
     plt.close()
 
 
@@ -1350,8 +1337,7 @@ def plot_histogram_for_array(array, nbins, figure_path, title, suffix, t=None, s
         x = np.linspace(np.min(array), np.max(array), 200)
         y = norm.pdf(x, loc=t, scale=nstds * std) * scale
         plt.plot(x, y, color='gray')
-    plt.savefig(f'{figure_path}/histogram_{suffix}.png', bbox_inches='tight', dpi=300)
-    plt.savefig(f'{figure_path}/histogram_{suffix}.pdf', bbox_inches='tight', dpi=300)
+    save_figure(plt.gcf(), f'{figure_path}/histogram_{suffix}.png', f'{figure_path}/histogram_{suffix}.pdf', bbox_inches='tight', dpi=300)
     plt.close()
 
 

@@ -5,6 +5,7 @@ import geopandas as gpd
 from typing import Tuple, List
 
 from ... import helperfuncs
+from spoqc.core.figures import save_figure
 
 def is_convex(polygon: List[Tuple[float, float]]) -> Tuple[bool, float]:
     """
@@ -136,8 +137,7 @@ def calc_convexity(sdata, figure_path):
         )
         helperfuncs.apply_general_plotly_layout(fig, True)
         figures.append(fig)
-        fig.write_image(f"{figure_path}/histogram_{cat[1]}.png", scale=3)
-        fig.write_image(f"{figure_path}/histogram_{cat[1]}.pdf", scale=3)
+        save_figure(fig, f"{figure_path}/histogram_{cat[1]}.png", f"{figure_path}/histogram_{cat[1]}.pdf", scale=3)
 
     with open(f'{figure_path}/convexity.html', 'w') as f:
         for fig in figures:

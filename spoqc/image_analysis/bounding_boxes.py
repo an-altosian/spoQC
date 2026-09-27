@@ -8,6 +8,7 @@ from skimage.morphology import dilation, disk
 from .. import helperfuncs
 from .. import hqr
 from .. import metrics
+from spoqc.core.figures import save_figure
 
 def _overlap(a, b):
     # boxes: [min_row, min_col, max_row, max_col]
@@ -83,8 +84,7 @@ def _boudning_box_plot(bounding_boxes, figure_path, suffix, image, imagedim, fli
                 linewidth=2,
             )
 
-    plt.savefig(f'{figure_path}/imageplot_{suffix}.png', bbox_inches='tight', dpi=300)
-    plt.savefig(f'{figure_path}/imageplot_{suffix}.pdf', bbox_inches='tight', dpi=300)
+    save_figure(plt.gcf(), f'{figure_path}/imageplot_{suffix}.png', f'{figure_path}/imageplot_{suffix}.pdf', bbox_inches='tight', dpi=300)
     plt.close()
 
 
@@ -158,8 +158,7 @@ def define_bounding_boxes(
             aspect='equal'
         )
     plt.title(f"Dilated image")
-    plt.savefig(f'{figure_path}/imageplot_dilated_image_for_bounding_box.png', bbox_inches='tight', dpi=300)
-    plt.savefig(f'{figure_path}/imageplot_dilated_image_for_bounding_box.pdf', bbox_inches='tight', dpi=300)
+    save_figure(plt.gcf(), f'{figure_path}/imageplot_dilated_image_for_bounding_box.png', f'{figure_path}/imageplot_dilated_image_for_bounding_box.pdf', bbox_inches='tight', dpi=300)
     plt.close()
 
 
