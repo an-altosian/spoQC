@@ -2,14 +2,12 @@ import numpy as np
 import pandas as pd
 import gzip
 import re
-import polars as pl
 import plotly.express as px
 import plotly.graph_objects as go
 
 from typing import Any
 
 from .. import helperfuncs
-from ..core import transcripts
 
 # data from https://www.gencodegenes.org/human/
 def parse_gtf(file_path: str) -> None:
@@ -166,15 +164,13 @@ def negativeprobeqc(sdata: Any, figure_path: str, key_transcripts: str) -> None:
         None: Saves the generated plot as a PNG file in the specified path.
     """
 
-    df = transcripts.load_transcripts(sdata, ['x', 'y', 'feature_name'])
+    df = sdata[key_transcripts].compute()
 
-    # The match depends only on the name, so test each category once instead of every transcript.
-    neg_probe_names = [x for x in df['feature_name'].cat.get_categories() if re.compile('NegControlCodeword').match(x)]
-    df = df.filter(pl.col('feature_name').is_in(neg_probe_names)).to_pandas()
+    match_neg_probes = [bool(re.compile('NegControlCodeword').match(x)) for x in list(df['feature_name'])]
 
-    df['neg_probes'] = True
+    df['neg_probes'] = match_neg_probes
 
-    helperfuncs.plot_scatter_density_df(df, figure_path, 
+    helperfuncs.plot_scatter_density_df(df[df['neg_probes'] == True], figure_path, 
                                         'neg_probes', 'neg_probes', None, ['black'],
                                         'Density of negative probes')
 
