@@ -89,3 +89,4 @@ spoqc = "spoqc.__main__:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: long-running differential tests (deselect with -m 'not slow')"]
