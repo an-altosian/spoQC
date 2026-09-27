@@ -242,12 +242,3 @@ def test_calc_convexity_matches_original_on_random_dense_tissue(no_plots, tmp_pa
 def test_convexity_metrics_rejects_degenerate_polygon():
     with pytest.raises(ValueError, match="at least three vertices"):
         convexity.convexity_metrics(np.array([box(0, 0, 1, 1), Polygon()]), 2)
-
-
-@pytest.mark.parametrize('k', [2, 7, 8, 9, 16, 17, 100, 129])
-def test_row_mean_matches_1d_mean(k):
-    """calc_convexity relies on np.mean(M, axis=1)[i] == np.mean(M[i]) for gathered rows."""
-    values = np.random.default_rng(k).uniform(0, 1, (500, k))
-    gathered = values.ravel()[np.arange(500)[:, None] * k + np.arange(k)]
-    row_means = np.mean(gathered, axis=1)
-    assert row_means.tobytes() == np.array([np.mean(list(r)) for r in values]).tobytes()

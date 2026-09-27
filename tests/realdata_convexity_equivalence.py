@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from test_convexity_equivalence import OUTPUT_COLUMNS, copy_sdata, reference_calc_convexity  # noqa: E402
 
 from spoqc import helperfuncs  # noqa: E402
+from spoqc.core import spatial  # noqa: E402
 from spoqc.general.valid_geometries import correct_for_valid_geometries  # noqa: E402
 from spoqc.metrics.segmentation import convexity  # noqa: E402
 
@@ -51,8 +52,9 @@ def main(path, threads, raw, skip_reference):
     timed(f"new calc_convexity (threads={threads})",
           lambda: convexity.calc_convexity(actual, os.environ.get('TMPDIR', '/tmp'), threads))
     cells, nuclei = sdata['cell_boundaries'], sdata['nucleus_boundaries']
-    timed(f"new find_overlapping_nuclei (threads={threads})",
-          lambda: convexity.find_overlapping_nuclei(cells, nuclei, threads))
+    timed(f"new spatial.polygons_containing (threads={threads})",
+          lambda: spatial.polygons_containing(np.asarray(cells.geometry.values),
+                                              np.asarray(nuclei.geometry.centroid.values), threads))
     timed(f"new convexity_metrics (cells, threads={threads})",
           lambda: convexity.convexity_metrics(np.asarray(cells.geometry.values), threads))
     if skip_reference:
