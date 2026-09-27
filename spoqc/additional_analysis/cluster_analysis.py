@@ -462,8 +462,7 @@ def celltype_cluster_analysis(
                         full_html=False,
                         include_plotlyjs='cdn',
                     )
-                helperfuncs.plotly_save_as_png(fig, f"{figure_path}/umap_plot_{umap_cat + plot_suffix}.png")
-                helperfuncs.plotly_save_as_png(fig, f"{figure_path}/umap_plot_{umap_cat + plot_suffix}.pdf")
+                helperfuncs.plotly_save_as_png(fig, f"{figure_path}/umap_plot_{umap_cat + plot_suffix}.png", f"{figure_path}/umap_plot_{umap_cat + plot_suffix}.pdf")
 
             if ( umap_cat in ['doublet', 'nucleus_free', 'border_cell'] ):
 
@@ -642,8 +641,7 @@ def celltype_cluster_analysis(
 
         if ( html ):
             fig.write_html(f"{figure_path}/umap_plot_{c}.html")
-        helperfuncs.plotly_save_as_png(fig, f"{figure_path}/umap_plot_{c}.png")
-        helperfuncs.plotly_save_as_png(fig, f"{figure_path}/umap_plot_{c}.pdf")
+        helperfuncs.plotly_save_as_png(fig, f"{figure_path}/umap_plot_{c}.png", f"{figure_path}/umap_plot_{c}.pdf")
 
     c = 'hqr_filtered_out'
     hqpr_cols = [f'hqpr_{staining}_filtered_out' for staining in stainings]
@@ -686,8 +684,7 @@ def celltype_cluster_analysis(
 
     if ( html ):
         fig.write_html(f"{figure_path}/umap_plot_{c}.html")
-    helperfuncs.plotly_save_as_png(fig, f"{figure_path}/umap_plot_{c}.png")
-    helperfuncs.plotly_save_as_png(fig, f"{figure_path}/umap_plot_{c}.pdf")
+    helperfuncs.plotly_save_as_png(fig, f"{figure_path}/umap_plot_{c}.png", f"{figure_path}/umap_plot_{c}.pdf")
     timer.stop()
 
     ####################################################################################################################

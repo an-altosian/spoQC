@@ -142,3 +142,29 @@ class TestWorkers:
         pool.wait()
         assert pool._executor._max_workers == WORKERS
         assert 0 < len(pool._executor._processes) <= WORKERS
+
+
+class TestOversizeImages:
+    def _imshow(self, data):
+        fig, ax = plt.subplots(figsize=(2, 2), dpi=50)
+        ax.imshow(data, cmap="viridis")
+        return fig, ax.images[0]
+
+    def test_oversize_image_is_decimated_before_pickling_and_keeps_its_colour_scale(self, pool, tmp_path):
+        data = np.zeros((4000, 4000), dtype=np.float32)
+        data[1, 1] = 7.0  # dropped by decimation; the colour scale must still come from it
+        fig, image = self._imshow(data)
+        save_figure(fig, tmp_path / "img.png", tmp_path / "img.pdf", dpi=50)
+        pool.wait()
+        assert max(image.get_array().shape) <= 4000 // 10
+        assert (image.norm.vmin, image.norm.vmax) == (0.0, 7.0)
+        assert (tmp_path / "img.png").read_bytes().startswith(b"\x89PNG")
+        assert (tmp_path / "img.pdf").read_bytes().startswith(b"%PDF")
+
+    def test_zoomed_in_image_keeps_full_resolution(self, pool, tmp_path):
+        fig, image = self._imshow(np.random.default_rng(0).random((4000, 4000)))
+        image.axes.set_xlim(0, 50)
+        image.axes.set_ylim(50, 0)
+        save_figure(fig, tmp_path / "zoom.png", dpi=50)
+        pool.wait()
+        assert image.get_array().shape == (4000, 4000)

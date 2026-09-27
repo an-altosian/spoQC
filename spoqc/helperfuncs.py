@@ -232,11 +232,11 @@ def image_crop(sdata: Any, bb_xmin: float, bb_ymin: float,
         return None, None, None
 
 
-def plotly_save_as_png(fig, plot_path, w=4, h=3, dpi=300):
+def plotly_save_as_png(fig, *plot_paths, w=4, h=3, dpi=300):
     width_px  = w * dpi
     height_px = h * dpi
     fig.update_layout(margin=dict(l=40, r=20, t=30, b=40))
-    save_figure(fig, plot_path, width=width_px, height=height_px, scale=1)
+    save_figure(fig, *plot_paths, width=width_px, height=height_px, scale=1)
     
 
 def generate_distinct_colors(num_colors: int) -> List[str]:
