@@ -63,7 +63,6 @@ def generate_transcript_ambient_density_image(
     img_extent = sd.get_extent(sdata[image_type], coordinate_system='global')
     imagedim = helperfuncs.ImageDimStruct(img_extent['x'][0], img_extent['y'][0],
                                         img_extent['x'][1], img_extent['y'][1])
-    nuclei_centroid_coords = sd.get_centroids(sdata['nucleus_boundaries'], coordinate_system='global').compute()
 
     xy_kernel_transcript_density = transcript_density_image.disk_density(xy_transcript_density, kernel_radius, threads)
     del transcript_density_list, xy_transcript_density  # free the grid before the next one
