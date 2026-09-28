@@ -8,11 +8,8 @@ import pandas as pd
 from matplotlib.collections import PolyCollection
 import seaborn as sns
 import os
-import polars as pl
 
 from ... import helperfuncs
-from spoqc.core.figures import save_figure
-from ...core import transcripts
 
 def count_stuff_in_triangles_via_delaunay(delaunay, stuff):
     num_triangles = len(delaunay.simplices)
@@ -141,7 +138,8 @@ def calc_void(
         nx.draw_networkx_edge_labels(traingular_graph, pos, edge_labels=edge_labels, font_size=10)
 
         plt.title("Triangle Connectivity Graph")
-        save_figure(plt.gcf(), f'{figure_path}/traingle_connectivit_graph.png', f'{figure_path}/traingle_connectivit_graph.pdf', bbox_inches='tight', dpi=300)
+        plt.savefig(f'{figure_path}/traingle_connectivit_graph.png', bbox_inches='tight', dpi=300)
+        plt.savefig(f'{figure_path}/traingle_connectivit_graph.pdf', bbox_inches='tight', dpi=300)
         plt.close()
 
     ###########################
@@ -158,7 +156,8 @@ def calc_void(
     helperfuncs.apply_general_plotly_layout(fig, True)
 
     figures.append(fig)
-    save_figure(fig, f"{figure_path}/boxplot_edge_lengths.png", f"{figure_path}/boxplot_edge_lengths.pdf", scale=3)
+    fig.write_image(f"{figure_path}/boxplot_edge_lengths.png", scale=3)
+    fig.write_image(f"{figure_path}/boxplot_edge_lengths.pdf", scale=3)
 
     with open(f'{figure_path}/void.html', 'w') as f:
         for fig in figures:
@@ -233,7 +232,8 @@ def calc_void(
         ax.invert_yaxis()
     ax.set_title("Largest Enclosed Empty Patches")
     ax.set_aspect('equal', adjustable='box')
-    save_figure(plt.gcf(), f'{figure_path}/spatial_traingle_all_clsuters.png', f'{figure_path}/spatial_traingle_all_clsuters.pdf', bbox_inches='tight', dpi=300)
+    plt.savefig(f'{figure_path}/spatial_traingle_all_clsuters.png', bbox_inches='tight', dpi=300)
+    plt.savefig(f'{figure_path}/spatial_traingle_all_clsuters.pdf', bbox_inches='tight', dpi=300)
     plt.close()
 
     timer.stop()
@@ -288,7 +288,16 @@ def calc_void(
             plt.gca().invert_yaxis()
         ax.set_aspect('equal', adjustable='box')
         plt.title("Largest Enclosed Empty Patches")
-        save_figure(plt.gcf(), f'{figure_path}/spatial_traingle_filtered_clusters_{with_numbers}.png', f'{figure_path}/spatial_traingle_filtered_clusters_{with_numbers}.pdf', bbox_inches='tight', dpi=300)
+        plt.savefig(
+            f'{figure_path}/spatial_traingle_filtered_clusters_{with_numbers}.png',
+            bbox_inches='tight',
+            dpi=300
+        )
+        plt.savefig(
+            f'{figure_path}/spatial_traingle_filtered_clusters_{with_numbers}.pdf',
+            bbox_inches='tight',
+            dpi=300
+        )
         plt.close()
     
     timer.stop()
@@ -296,7 +305,7 @@ def calc_void(
     ##################################################
     #### Triangle cluster counting (outside cell) ####
     ##################################################
-    transcripts_df = transcripts.load_transcripts(sdata, ['x', 'y', 'cell_id', 'feature_name'])
+    transcripts_df = sdata['transcripts'].compute()
 
     # Doublet information has to be loaded here because I fill filter transcripts_df.
     doublet_check = False
@@ -305,16 +314,13 @@ def calc_void(
     if ( doublet_check ):
         print("[NOTE] Load doublet information for void QC")
         tmp_data = pd.read_parquet(f'{spoqc_tmp_folder}/doublet_output_transcripts.parquet')
-        # Same rows in the same order as the transcripts element, so the index join is positional;
-        # a stale parquet from another run in a reused tmp dir fails here.
-        assert np.array_equal(tmp_data.index.to_numpy(), transcripts.transcript_index(sdata))
-        transcripts_df = transcripts_df.hstack(pl.from_pandas(tmp_data))
+        transcripts_df = transcripts_df.join(tmp_data, how='left')
 
     ###### Count
     # Count transcripts that are outside the cell for each triangle
     print(f'[NOTE] counting transcripts that are outside the cell for {len(triangles_pointcoords)} triangles')
-    transcripts_outside_cell_df = transcripts_df.filter(pl.col('cell_id') == -1)
-    transcript_ocell_coords = transcripts_outside_cell_df.select(pl.col('x', 'y').cast(pl.Float64)).to_numpy()
+    transcripts_outside_cell_df = transcripts_df.loc[transcripts_df['cell_id'] == -1]
+    transcript_ocell_coords = np.array(list(zip(transcripts_outside_cell_df['x'], transcripts_outside_cell_df['y'])))
     timer.start()
     counts, indices = count_stuff_in_triangles_via_delaunay(delaunay, transcript_ocell_coords)
     timer.stop()
@@ -339,9 +345,9 @@ def calc_void(
     # We just consider transcripts outside the cell.
     if ( doublet_check ):
         print(f'[NOTE] counting transcripts belong to doublet regions for {len(triangles_pointcoords)} triangles')
-        transcripts_doublet_df = transcripts_outside_cell_df.filter(pl.col('doublet'))
+        transcripts_doublet_df = transcripts_outside_cell_df.loc[transcripts_outside_cell_df['doublet']]
         if ( len(transcripts_doublet_df) > 0 ):
-            transcript_doublet_coords = transcripts_doublet_df.select(pl.col('x', 'y').cast(pl.Float64)).to_numpy()
+            transcript_doublet_coords = np.array(list(zip(transcripts_doublet_df['x'], transcripts_doublet_df['y'])))
             counts, indices = count_stuff_in_triangles_via_delaunay(delaunay, transcript_doublet_coords)
             triangles_df['transcripts_counts_doublets'] = counts
         else:
@@ -355,11 +361,12 @@ def calc_void(
         for contaminant in contaminant_list:
             print(f'[NOTE] counting transcripts belong to contaminatn {contaminant} ' + \
                   f'for {len(triangles_pointcoords)} triangles')
-            transcripts_contaminant_df = transcripts_outside_cell_df.filter(pl.col('feature_name') == contaminant)
+            transcripts_contaminant_df = transcripts_outside_cell_df.loc[
+                transcripts_outside_cell_df['feature_name'] == contaminant
+            ]
             if ( len(transcripts_contaminant_df) > 0 ):
-                transcript_contaminant_coords = transcripts_contaminant_df.select(
-                    pl.col('x', 'y').cast(pl.Float64)
-                ).to_numpy()
+                transcript_contaminant_coords = np.array(list(zip(transcripts_contaminant_df['x'],
+                                                              transcripts_contaminant_df['y'])))
                 counts, indices = count_stuff_in_triangles_via_delaunay(
                     delaunay,
                     transcript_contaminant_coords
@@ -449,7 +456,8 @@ def calc_void(
         plt.xlabel("Void number")
         plt.ylabel(y)
 
-        save_figure(plt.gcf(), f'{figure_path}/barplot_void_{y}.png', f'{figure_path}/barplot_void_{y}.pdf', bbox_inches='tight', dpi=300)
+        plt.savefig(f'{figure_path}/barplot_void_{y}.png', bbox_inches='tight', dpi=300)
+        plt.savefig(f'{figure_path}/barplot_void_{y}.pdf', bbox_inches='tight', dpi=300)
         plt.close()
 
     #################################################
@@ -551,7 +559,8 @@ def calc_void(
             sm.set_array([])
             plt.colorbar(sm, ax=ax, label=cat)
 
-            save_figure(plt.gcf(), f'{figure_path}/spatial_traingle_all_clsuters_{cat}.png', f'{figure_path}/spatial_traingle_all_clsuters_{cat}.pdf', bbox_inches='tight', dpi=300)
+            plt.savefig(f'{figure_path}/spatial_traingle_all_clsuters_{cat}.png', bbox_inches='tight', dpi=300)
+            plt.savefig(f'{figure_path}/spatial_traingle_all_clsuters_{cat}.pdf', bbox_inches='tight', dpi=300)
             plt.close()
 
         else:

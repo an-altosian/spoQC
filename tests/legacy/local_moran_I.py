@@ -1,51 +1,13 @@
 import numpy as np
-import polars as pl
 import pandas as pd
 import concurrent.futures
 import scipy.sparse as sp
 import concurrent.futures
 
 from libpysal.weights import KNN
+from scipy.spatial import cKDTree
 
 from ... import helperfuncs
-from ...core import groupreduce, spatial, transcripts
-
-# Cells within this distance of a cell form its Moran's I neighbourhood.
-NEIGHBOURHOOD_RADIUS = 100
-# Transcripts outside cells take the local Moran's I of the nearest in-cell transcript
-# of the same gene, if one lies closer than this.
-OUTSIDE_NEIGHBOUR_DISTANCE = 100.0
-
-
-def fill_outside_from_nearest_inside(coords, feat, local_I, outside_mask, threads):
-    """
-    Sets local_I of every outside transcript to that of the nearest inside transcript of the
-    same feature closer than OUTSIDE_NEIGHBOUR_DISTANCE, else to 0.0. Modifies local_I in place.
-
-    Transcripts are grouped by feature once (a stable sort keeps each group's positions
-    ascending, as np.flatnonzero gave them); features then run on `threads` threads, one
-    nearest query each (KD-tree builds and queries release the GIL). Features only read
-    inside values and write disjoint outside positions, so the order does not matter.
-    """
-    codes, features = pd.factorize(feat)
-    order = np.argsort(codes, kind="stable")
-    offsets = groupreduce.group_offsets(codes[order], len(features))
-
-    def nearest_inside_values(members):
-        out_idx = members[outside_mask[members]]
-        in_idx = members[~outside_mask[members]]
-        values = np.zeros(out_idx.size, dtype=local_I.dtype)
-        if out_idx.size and in_idx.size:
-            nn, dists = spatial.nearest(coords[out_idx], coords[in_idx], 1, distance_upper_bound=OUTSIDE_NEIGHBOUR_DISTANCE)
-            has_neighbor = np.isfinite(dists) & (nn < in_idx.size)
-            values[has_neighbor] = local_I[in_idx[nn[has_neighbor]]]
-        return out_idx, values
-
-    with concurrent.futures.ThreadPoolExecutor(threads) as executor:
-        for out_idx, values in executor.map(nearest_inside_values, groupreduce.ragged_lists(order, offsets)):
-            local_I[out_idx] = values
-    return local_I
-
 
 # Vectorized Moran-I for all genes in a neighborhood
 def moran_I_all_genes(X_dense: np.ndarray, w) -> np.ndarray:
@@ -135,7 +97,13 @@ def calculate_local_moran_I_values(sdata, threads):
     coords_all = np.asarray(sdata['table'].obsm['spatial'], dtype=np.float64)
     center_cell_ids = sdata['table'].obs.index.to_numpy()
 
-    distance_matrix = spatial.neighbour_lists(coords_all, NEIGHBOURHOOD_RADIUS, threads)
+    distance_matrix = helperfuncs.points_within_radius(
+        # if it accepts array, give coords_all; otherwise keep your df_coords
+        # df_coords,
+        pd.DataFrame({"x": coords_all[:, 0], "y": coords_all[:, 1]}),
+        100,
+        False
+    )
 
     # ----------------------------
     # Parallel execution
@@ -171,33 +139,33 @@ def calculate_local_moran_I_values(sdata, threads):
     #   all_ids: (n,) center cell ids
     #   all_I:   (n, num_genes) Moran's I per center cell and gene
     
-    return local_moran_I_per_transcript(sdata, all_ids, all_I, threads)
-
-
-def local_moran_I_per_transcript(sdata, all_ids, all_I, threads):
     # Make sure dtypes match your all_ids / var_names
-    transcripts_df = transcripts.load_transcripts(sdata, ['x', 'y', 'cell_id', 'feature_name'])
-    transcripts_cell_id = transcripts_df["cell_id"]
-    transcripts_feature = transcripts_df["feature_name"].to_physical().to_numpy()  # Enum codes
+    transcripts_df = sdata.points['transcripts'].compute()
+    transcripts_cell_id = transcripts_df["cell_id"].to_numpy()
+    transcripts_feature = transcripts_df["feature_name"].to_numpy()
 
     # Build fast maps -> indices
     cell_to_row = {cid: i for i, cid in enumerate(all_ids)}
     gene_to_col = {g: j for j, g in enumerate(sdata['table'].var_names)}
 
-    # Unmatched cells become null and unmatched genes -1, as NaN did in the pandas map.
-    cell_rows = transcripts_cell_id.replace_strict(cell_to_row, default=None, return_dtype=pl.Int64)
-    valid_cell = cell_rows.is_not_null().to_numpy()
-    cell_rows = cell_rows.fill_null(-1).to_numpy()
-    gene_cols = transcripts.lookup_by_code(transcripts_df["feature_name"], gene_to_col, -1, np.int64)[transcripts_feature]
+    # Vectorize mapping via pandas (fast C code) rather than Python loops
+    # (This avoids a Python loop over transcripts.)
+    cell_rows = pd.Index(transcripts_cell_id).map(cell_to_row).to_numpy()
+    gene_cols = pd.Index(transcripts_feature).map(gene_to_col).to_numpy()
 
     # Initialize output
     loca_morans_I_array = np.full(len(transcripts_feature), -1.0, dtype=np.float32)
 
     # Valid rows are those that found both a cell and a gene
-    valid = valid_cell & (gene_cols != -1)
+    valid = (cell_rows != -1) & (gene_cols != -1) & (~pd.isna(cell_rows)) & (~pd.isna(gene_cols))
+
+    # Convert to int for indexing
+    cell_rows = cell_rows.astype(np.int64, copy=False)
+    gene_cols = gene_cols.astype(np.int64, copy=False)
 
     # One shot gather
     loca_morans_I_array[valid] = all_I[cell_rows[valid], gene_cols[valid]]
+    transcripts_df['local_moran_I'] = loca_morans_I_array
 
     # --------------------------------------------------------
     # Now I have to take care of the transcripts outside cells
@@ -205,15 +173,50 @@ def local_moran_I_per_transcript(sdata, all_ids, all_I, threads):
     # For those transcripts I take the nearest transcripts with the same feature name.
     # If none can be found the local Moran's I will be set to 0.0.
 
+    # Masks
     outside_mask = (loca_morans_I_array == -1)
+    inside_mask  = ~outside_mask
 
     # Pull arrays once (avoid repeated pandas overhead)
-    x = transcripts_df["x"].cast(pl.Float64).to_numpy()
-    y = transcripts_df["y"].cast(pl.Float64).to_numpy()
+    x = transcripts_df["x"].to_numpy(dtype=np.float64, copy=False)
+    y = transcripts_df["y"].to_numpy(dtype=np.float64, copy=False)
     coords = np.column_stack((x, y))
 
-    local_I = loca_morans_I_array
-    fill_outside_from_nearest_inside(coords, transcripts_feature, local_I, outside_mask, threads)
+    feat = transcripts_feature  # already a numpy array per your code
+    local_I = transcripts_df["local_moran_I"].to_numpy(dtype=np.float32, copy=False)
 
+    # Work on outside only, grouped by feature
+    features_outside = np.unique(feat[outside_mask])
+
+    dist_thresh = 100.0  # max distance
+
+    for f in features_outside:
+        # indices for this feature
+        out_idx = np.flatnonzero(outside_mask & (feat == f))
+        if out_idx.size == 0:
+            continue
+
+        in_idx = np.flatnonzero(inside_mask & (feat == f))
+        if in_idx.size == 0:
+            # no inside transcripts of this feature -> keep default behavior
+            # your old code sets 0.0 when it can't find a neighbor within 100
+            local_I[out_idx] = 0.0
+            continue
+
+        # KDTree on inside points of this feature
+        tree = cKDTree(coords[in_idx])
+
+        # Query nearest inside point for each outside point, with cutoff radius
+        dists, nn = tree.query(coords[out_idx], k=1, distance_upper_bound=dist_thresh)
+
+        # nn is an index into in_idx (or == len(in_idx) when no neighbor within R)
+        has_neighbor = np.isfinite(dists) & (nn < in_idx.size)
+
+        # default when no neighbor within R (matches your old win_moran_I init)
+        local_I[out_idx] = 0.0
+        local_I[out_idx[has_neighbor]] = local_I[in_idx[nn[has_neighbor]]]
+
+    # Write back once
+    transcripts_df["local_moran_I"] = local_I
     print('... done calculating local morans I')
-    return local_I
+    return np.array(transcripts_df["local_moran_I"])

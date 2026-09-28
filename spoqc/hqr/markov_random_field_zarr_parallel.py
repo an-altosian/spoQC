@@ -10,7 +10,7 @@ from spoqc.core.figures import save_figure
 
 # -------- Numba kernels (pure compute; no I/O) --------
 # Every kernel parallelises over image rows with prange, so the thread count is
-# numba's pool size (set from CONST.THREADS in cli.py).
+# numba's pool size (NUMBA_NUM_THREADS, set by spoqc.core.threads.configure).
 
 @njit(parallel=True, fastmath=False)
 def compute_unary_numba(p, eps, u_out):

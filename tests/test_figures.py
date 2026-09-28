@@ -309,12 +309,16 @@ class TestPoolLifecycle:
 class TestCli:
     def _main(self, monkeypatch, tmp_path, run, calls):
         from spoqc import cli
+        from spoqc.cli_args import build_parser
+        from spoqc.core import threads
 
+        # the entry point would have run threads.configure(12); numpy is already loaded here
+        monkeypatch.setattr(threads, "N", 12)
         monkeypatch.setattr(cli.figures, "start", lambda n: calls.append(("start", n)))
         monkeypatch.setattr(cli.figures, "stop", lambda: calls.append(("stop",)))
         monkeypatch.setattr(cli.figures, "abort", lambda: calls.append(("abort",)))
         monkeypatch.setattr(cli, "run", run)
-        cli.main(["-i", str(tmp_path), "-o", str(tmp_path), "-t", str(tmp_path), "-n", "12"])
+        cli.main(build_parser().parse_args(["-i", str(tmp_path), "-o", str(tmp_path), "-t", str(tmp_path), "-n", "12"]))
 
     def test_pool_gets_a_share_of_the_thread_budget_and_is_stopped(self, monkeypatch, tmp_path):
         calls = []
@@ -442,3 +446,4 @@ class TestOvrlpyFigures:
         pool.wait()
         assert (tmp_path / "map.png").read_bytes().startswith(b"\x89PNG")
         assert (tmp_path / "map.pdf").read_bytes().startswith(b"%PDF")
+
