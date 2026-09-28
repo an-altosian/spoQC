@@ -24,7 +24,6 @@ def count_stuff_in_triangles_via_delaunay(delaunay, stuff):
     # This counts how often a triangle id appears.
     counts = np.bincount(simplex_ids[simplex_ids >= 0], minlength=num_triangles)
 
-    point_idx = np.nonzero(simplex_ids >= 0)[0]
     # The per-triangle point-index lists used to be materialised here as a Python
     # list of num_triangles array slices, on every one of the four call sites. The
     # only consumer has been commented out since the function was written (see the

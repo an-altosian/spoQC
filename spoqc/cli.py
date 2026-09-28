@@ -6,7 +6,6 @@ from __future__ import annotations
 import sys
 
 # Utility imports
-import os
 import random
 import argparse
 import numpy as np

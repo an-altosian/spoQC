@@ -7,7 +7,6 @@ numerically beyond "the counts are still right".
 import inspect
 
 import numpy as np
-import pytest
 
 
 class TestTriangleIndexListsRemoved:

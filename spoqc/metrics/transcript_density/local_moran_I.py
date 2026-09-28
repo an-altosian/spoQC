@@ -3,7 +3,6 @@ import polars as pl
 import pandas as pd
 import concurrent.futures
 import scipy.sparse as sp
-import concurrent.futures
 
 from libpysal.weights import KNN
 
