@@ -9,7 +9,7 @@ from scipy.ndimage import convolve
 from ... import helperfuncs
 from ... import priors
 from . import local_moran_I
-from ...core import transcripts
+from ...core import groupreduce, transcripts
 
 # We are calculating a kernel density at the end so you will not have your usual [-1,1] autocorraltion values.
 def generate_transcript_ambient_density_image(
@@ -60,12 +60,7 @@ def generate_transcript_ambient_density_image(
         .rename("morans_I")
     )
 
-    x_idx = range(int(imagedim.bb_xmin), int(imagedim.bb_xmax))
-    y_idx = range(int(imagedim.bb_ymin), int(imagedim.bb_ymax))
-    # pd.MultiIndex.from_product builds the identical index in C; from_tuples
-    # materialised one Python tuple per pixel first. Verified with
-    # mi_old.equals(mi_new) -> True, so every downstream value is unchanged.
-    grid_mi = pd.MultiIndex.from_product([y_idx, x_idx], names=["y", "x"]).swaplevel(0, 1)
+    grid_mi = groupreduce.pixel_grid_index(imagedim)
 
     transcript_density_list = (
         gm.reindex(grid_mi)     # align to the full grid

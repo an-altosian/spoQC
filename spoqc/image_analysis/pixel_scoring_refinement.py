@@ -17,8 +17,10 @@ def start_pixel_mask_refinement(
         max_iter,
         *,
         chunk_size=10000,
-        staining=None
+        staining=None,
+        beliefs_raw=None,
     ):
+    """beliefs_raw: start_pixel_qc's per-pixel beliefs when it ran in this process; None reads them from mask_raw."""
 
 # # In[]
 
@@ -52,8 +54,9 @@ def start_pixel_mask_refinement(
     else:
         figure_path = f'{figure_path}/{modality}/{modality}_refinement/'
 
-    image_ddf = dd.read_parquet(f'{spoqc_tmp_folder}/{prefix}_output_mask_raw', columns=[f"{prefix}_beliefs"], engine="pyarrow")
-    beliefs_raw = image_ddf[f"{prefix}_beliefs"].compute().to_numpy()
+    if ( beliefs_raw is None ):
+        image_ddf = dd.read_parquet(f'{spoqc_tmp_folder}/{prefix}_output_mask_raw', columns=[f"{prefix}_beliefs"], engine="pyarrow")
+        beliefs_raw = image_ddf[f"{prefix}_beliefs"].compute().to_numpy()
 
     # Start the refinement of the proability for the pixel score.
     beliefs, labels = hqr.markov_random_field_zarr_parallel.first_version_loopy_belief_propagation_parallel(

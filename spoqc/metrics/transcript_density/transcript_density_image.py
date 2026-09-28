@@ -1,11 +1,10 @@
 import spatialdata as sd
 import numpy as np
-import pandas as pd
 
 from scipy.ndimage import convolve
 
 from ... import helperfuncs
-from ...core import transcripts
+from ...core import groupreduce, transcripts
 
 def generate_transcript_density_image(
         sdata,
@@ -28,10 +27,6 @@ def generate_transcript_density_image(
     transcript_coords_df = transcript_coords_df.astype(int)
     xy_transcript_coords_df = transcript_coords_df.loc[:,['x','y']]
 
-    # These list I need later because the image matrix has not the same index range as the centroid coords.
-    x_idx = [i for i in range(int(imagedim.bb_xmin), int(imagedim.bb_xmax))]
-    y_idx = [i for i in range(int(imagedim.bb_ymin), int(imagedim.bb_ymax))]
-
     print("[NOTE] Translate cooridnates")
     timer.start()
     counts = (
@@ -39,21 +34,13 @@ def generate_transcript_density_image(
         .value_counts(subset=['x','y'])      # returns a Series indexed by MultiIndex (x,y)
         .rename('count')
     )
-    # pd.MultiIndex.from_product builds the identical index in C; from_tuples
-    # materialised one Python tuple per pixel first. Verified with
-    # mi_old.equals(mi_new) -> True, so every downstream value is unchanged.
-    grid_mi = pd.MultiIndex.from_product([y_idx, x_idx], names=['y', 'x']).swaplevel(0, 1)
+    grid_mi = groupreduce.pixel_grid_index(imagedim)
     idxer = counts.index.get_indexer(grid_mi)  # -1 where (x,y) is missing
     vals = counts.to_numpy()
     transcript_density_list = np.where(idxer >= 0, vals[idxer], 0) # fill 0 where it is missing
     timer.stop()
 
     xy_transcript_density = np.array(transcript_density_list).reshape(dim_x, dim_y)
-
-    img_extent = sd.get_extent(sdata[image_type], coordinate_system='global')
-    imagedim = helperfuncs.ImageDimStruct(img_extent['x'][0], img_extent['y'][0],
-                                        img_extent['x'][1], img_extent['y'][1])
-    nuclei_centroid_coords = sd.get_centroids(sdata['nucleus_boundaries'], coordinate_system='global').compute()
 
     # kernel_size = 2 * r + 1
 
@@ -70,6 +57,10 @@ def generate_transcript_density_image(
     # xy_kernel_transcript_density = xy_kernel_transcript_density.astype(np.uint16) # conversion needed for cv2
 
     if ( figure_path != None ):
+        img_extent = sd.get_extent(sdata[image_type], coordinate_system='global')
+        imagedim = helperfuncs.ImageDimStruct(img_extent['x'][0], img_extent['y'][0],
+                                            img_extent['x'][1], img_extent['y'][1])
+        nuclei_centroid_coords = sd.get_centroids(sdata['nucleus_boundaries'], coordinate_system='global').compute()
 
         if ( flip ):
             helperfuncs.plot_pixels(

@@ -2,7 +2,7 @@
 
 All three transcript-density images built `[(x, y) for y in y_idx for x in x_idx]`
 and passed it to `pd.MultiIndex.from_tuples`. `pd.MultiIndex.from_product` builds
-the identical index in C.
+the identical index in C; the one builder is `spoqc.core.groupreduce.pixel_grid_index`.
 
 The acceptance bar is bit-identity, so these tests assert two things: that the
 two indexes are `.equals()` each other, and that the values the callers derive
@@ -12,6 +12,9 @@ from them are equal element for element -- for the `mean`, `max` and
 import numpy as np
 import pandas as pd
 import pytest
+
+from spoqc.core import groupreduce
+from spoqc.helperfuncs import ImageDimStruct
 
 
 X0, X1, Y0, Y1 = 0, 120, 0, 90
@@ -24,9 +27,17 @@ def _old_index(x_idx, y_idx):
     return pd.MultiIndex.from_tuples(grid, names=["x", "y"])
 
 
-def _new_index(x_idx, y_idx):
-    """The construction this PR uses."""
+def _inline_from_product(x_idx, y_idx):
+    """The inline construction the three call sites used before the shared builder, verbatim."""
     return pd.MultiIndex.from_product([y_idx, x_idx], names=["y", "x"]).swaplevel(0, 1)
+
+
+def _new_index(x_idx, y_idx):
+    """The shared builder, for the bounding box those ranges span (float bounds, as sdata extents)."""
+    imagedim = ImageDimStruct(
+        np.float64(x_idx[0]), np.float64(y_idx[0]), np.float64(x_idx[-1] + 1), np.float64(y_idx[-1] + 1)
+    )
+    return groupreduce.pixel_grid_index(imagedim)
 
 
 @pytest.fixture
@@ -65,6 +76,21 @@ class TestIndexIsTheSameIndex:
     def test_equal_for_degenerate_and_small_grids(self, nx, ny):
         x_idx, y_idx = range(X0, X0 + nx), range(Y0, Y0 + ny)
         assert _new_index(x_idx, y_idx).equals(_old_index(x_idx, y_idx))
+
+    @pytest.mark.parametrize("as_list", [False, True])
+    @pytest.mark.parametrize("x0,y0", [(0, 0), (-3, 17), (4096, 2048)])
+    def test_equal_to_the_inline_forms_it_replaces(self, as_list, x0, y0):
+        """ac_image/qv_image passed ranges, transcript_density_image passed lists."""
+        x_idx, y_idx = range(x0, x0 + 11), range(y0, y0 + 6)
+        inline = _inline_from_product(list(x_idx), list(y_idx)) if as_list else _inline_from_product(x_idx, y_idx)
+        new = _new_index(x_idx, y_idx)
+        assert new.equals(inline)
+        assert new.equals(_old_index(x_idx, y_idx))
+        assert list(new.names) == list(inline.names) == ["x", "y"]
+        for level_new, level_inline in zip(new.levels, inline.levels):
+            assert level_new.dtype == level_inline.dtype
+        for codes_new, codes_inline in zip(new.codes, inline.codes):
+            np.testing.assert_array_equal(codes_new, codes_inline)
 
 
 class TestDerivedValuesAreBitIdentical:
@@ -116,10 +142,9 @@ class TestNoCallSiteBuildsTuples:
 
         mod = importlib.import_module(f"spoqc.metrics.transcript_density.{module}")
         src = inspect.getsource(mod)
-        # Match the CALL and the comprehension, not the bare word -- the
-        # explanatory comment in the source mentions from_tuples by name.
         assert "MultiIndex.from_tuples(" not in src, f"{module} still calls from_tuples"
         assert "for y in y_idx for x in x_idx" not in src, (
             f"{module} still materialises a tuple per pixel"
         )
-        assert "MultiIndex.from_product(" in src
+        assert "MultiIndex.from_product(" not in src, f"{module} builds its own grid index"
+        assert "groupreduce.pixel_grid_index(imagedim)" in src
