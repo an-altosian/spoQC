@@ -162,7 +162,6 @@ def cli_sdata(path: Path, crop: tuple | None = None) -> sd.SpatialData:
         sdata, _, _ = helperfuncs.image_crop(sdata, *crop, "global")
     sdata["table"].obs.index = [int(i) for i in range(len(sdata["table"].obs.index))]
     mapping = dict(zip(sdata["table"].obs["cell_id"], sdata["table"].obs.index))
-    transcripts.set_cell_id_map(sdata, mapping)
     sdata.points["transcripts"]["cell_id"] = (
         sdata.points["transcripts"]["cell_id"]
         .map(mapping, meta=("cell_id", int))

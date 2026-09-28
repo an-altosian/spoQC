@@ -152,7 +152,7 @@ def transcriptqc(sdata, figure_path, annotation_file, key_transcripts):
     timer.stop()
 
 
-def negativeprobeqc(sdata: Any, figure_path: str, key_transcripts: str) -> None:
+def negativeprobeqc(sdata: Any, figure_path: str) -> None:
     """
     Perform quality control on negative probes by visualizing the density of negative probes 
     on a scatter plot and a kernel density estimate (KDE) plot.
@@ -160,7 +160,6 @@ def negativeprobeqc(sdata: Any, figure_path: str, key_transcripts: str) -> None:
     Args:
         figure_path (str): Path where the generated figure will be saved.
         sdata (Any): Spatial data containing the feature name and coordinates (x, y).
-        key_transcripts (str): The key in the spatial data corresponding to transcript data.
 
     Returns:
         None: Saves the generated plot as a PNG file in the specified path.

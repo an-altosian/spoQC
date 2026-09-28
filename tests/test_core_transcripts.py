@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import polars as pl
 import spatialdata as sd
-from conftest import N_PARTS, assert_same_array, cli_sdata
+from conftest import assert_same_array, cli_sdata
 
 from spoqc.core import transcripts
 
@@ -18,11 +18,6 @@ COLUMNS = [
     "overlaps_nucleus",
     "qv",
 ]
-
-
-def test_parquet_parts_sort_numerically(synthetic_zarr):
-    names = [p.rsplit("/", 1)[1] for p in transcripts.parquet_parts(synthetic_zarr)]
-    assert names == [f"part.{i}.parquet" for i in range(N_PARTS)]
 
 
 def test_load_equals_cli_dask_compute(sdata):
@@ -50,13 +45,13 @@ def test_frame_is_one_chunk_and_enum(sdata):
     assert isinstance(frame.schema["feature_name"], pl.Enum)
 
 
-def test_each_column_is_read_once(sdata, monkeypatch):
+def test_each_column_is_computed_once(sdata, monkeypatch):
     reads = []
-    real = pl.read_parquet
+    real = transcripts._read
     monkeypatch.setattr(
-        pl,
-        "read_parquet",
-        lambda parts, columns: reads.append(columns) or real(parts, columns=columns),
+        transcripts,
+        "_read",
+        lambda sdata, columns: reads.append(columns) or real(sdata, columns),
     )
     transcripts.load_transcripts(sdata, ["x", "y"])
     transcripts.load_transcripts(sdata, ["y", "qv"])

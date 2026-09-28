@@ -225,7 +225,6 @@ def main(args_ns: argparse.Namespace) -> None:
 
     # Mapping of transcript table
     mapping = dict(zip(sdata['table'].obs["cell_id"], sdata['table'].obs.index))
-    transcripts.set_cell_id_map(sdata, mapping)
     sdata.points['transcripts']['cell_id'] = (
         sdata.points['transcripts']['cell_id']
             .map(mapping, meta=('cell_id', int))
@@ -521,7 +520,7 @@ def main(args_ns: argparse.Namespace) -> None:
         #     f'{CONST.TRANSCRIPT_REFERENCE}',
         #     'transcripts'
         # )
-        subworkflows.qc_transcript.negativeprobeqc(sdata, figure_path, 'transcripts')
+        subworkflows.qc_transcript.negativeprobeqc(sdata, figure_path)
         print("[finish]")
 
     # negativeprobeqc is the last transcript consumer

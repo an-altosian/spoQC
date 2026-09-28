@@ -148,7 +148,7 @@ def test_negativeprobeqc_plots_same_points(sdata, monkeypatch):
     load_legacy("qc_transcript", "spoqc.subworkflows").negativeprobeqc(
         sdata, "unused", "transcripts"
     )
-    qc_transcript.negativeprobeqc(sdata, "unused", "transcripts")
+    qc_transcript.negativeprobeqc(sdata, "unused")
     expected, got = captured
     assert len(expected) > 0
     for column in ["x", "y", "neg_probes"]:
