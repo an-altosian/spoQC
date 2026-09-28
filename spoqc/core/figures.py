@@ -30,6 +30,8 @@ from matplotlib.collections import Collection, QuadMesh
 from matplotlib.figure import Figure
 from matplotlib.image import AxesImage
 
+from spoqc.core import threads
+
 # Threads of the run's budget per figure worker (see the CPU budget note above).
 THREADS_PER_FIGURE_WORKER = 4
 # Collections with at least this many elements are rasterised in PDF output. Vector PDF costs
@@ -188,8 +190,14 @@ def save_figure(fig, *paths, exact=False, **kwargs):
 def start(workers):
     """Open a pool of `workers` spawned processes for save_figure()."""
     global _executor
+    # Each worker runs single-threaded: threads.configure(1) is the initializer. Unpickling it
+    # imports only spoqc.core.threads, so it runs before the worker imports numpy, polars or
+    # numba (the task function lives in this module, which is imported after it).
     _executor = ProcessPoolExecutor(
-        max_workers=workers, mp_context=multiprocessing.get_context("spawn")
+        max_workers=workers,
+        mp_context=multiprocessing.get_context("spawn"),
+        initializer=threads.configure,
+        initargs=(1,),
     )
 
 

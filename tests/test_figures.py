@@ -447,3 +447,24 @@ class TestOvrlpyFigures:
         assert (tmp_path / "map.png").read_bytes().startswith(b"\x89PNG")
         assert (tmp_path / "map.pdf").read_bytes().startswith(b"%PDF")
 
+
+def _worker_thread_pools():
+    import cv2
+    import numba
+    import polars
+    from threadpoolctl import threadpool_info
+
+    from spoqc.core import threads
+
+    return {
+        "N": threads.N,
+        "polars": polars.thread_pool_size(),
+        "numba": numba.config.NUMBA_NUM_THREADS,
+        "cv2": cv2.getNumThreads(),
+        "native": sorted({p["num_threads"] for p in threadpool_info()}),
+    }
+
+
+def test_figure_workers_run_single_threaded(pool):
+    report = pool._executor.submit(_worker_thread_pools).result()
+    assert report == {"N": 1, "polars": 1, "numba": 1, "cv2": 1, "native": [1]}
