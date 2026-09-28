@@ -1,7 +1,8 @@
 """Whole-image raster primitives: load a modality's intensity image, read a per-pixel parquet column,
 dilate a binary mask with a disk, and box its 8-connected components.
 
-Every function is exact (bit-identical to the skimage/dask code it replaces) and splits its work
+Every function is exact (bit-identical to the skimage/dask code it replaces; for dilate_disk while
+the disk radius is below about the image size, see there) and splits its work
 over `threads` (row blocks, parquet row groups or dask chunks); the numba kernels use the numba
 pool, which cli.run sizes to CONST.THREADS.
 """
@@ -26,7 +27,9 @@ def read_pixel_column(path, column, threads):
     """Read one column of a per-pixel parquet (a single file, or a dask directory of part.N.parquet)
     into a 1-D numpy array in the row order dask.dataframe.read_parquet returns.
 
-    Row groups are decoded in parallel into one preallocated array.
+    Row groups are decoded in parallel into one preallocated array. Raises when there are no part
+    files, when the parts disagree on the column's type, or when the column holds nulls (dask would
+    turn those into NaN; here they have no numpy value).
     """
     if os.path.isdir(path):
         # dask orders its part files naturally (part.2 before part.10), not lexicographically.
@@ -35,17 +38,21 @@ def read_pixel_column(path, column, threads):
             key=natural_sort_key,
         )
         files = [os.path.join(path, n) for n in names]
+        if not files:
+            raise FileNotFoundError(f"no .parquet part files in {path}")
     else:
         files = [path]
-    pieces, sizes, dtype = [], [], None
+    pieces, sizes, types = [], [], set()
     for file in files:
         meta = pq.ParquetFile(file)
-        dtype = np.dtype(meta.schema_arrow.field(column).type.to_pandas_dtype())
+        types.add(meta.schema_arrow.field(column).type)
         for group in range(meta.metadata.num_row_groups):
             pieces.append((file, group))
             sizes.append(meta.metadata.row_group(group).num_rows)
+    if len(types) != 1:
+        raise ValueError(f"parts of {path} disagree on the type of {column}: {sorted(map(str, types))}")
     starts = np.concatenate([[0], np.cumsum(sizes, dtype=np.int64)])
-    out = np.empty(int(starts[-1]), dtype=dtype)
+    out = np.empty(int(starts[-1]), dtype=np.dtype(types.pop().to_pandas_dtype()))
 
     def read(i):
         file, group = pieces[i]
@@ -54,6 +61,8 @@ def read_pixel_column(path, column, threads):
             .read_row_group(group, columns=[column], use_threads=False)
             .column(0)
         )
+        if values.null_count:
+            raise ValueError(f"{values.null_count} nulls in {column} of {file}, row group {group}")
         out[starts[i] : starts[i + 1]] = values.to_numpy()
 
     with ThreadPoolExecutor(threads) as executor:
@@ -141,6 +150,10 @@ def _dilate_rows(gaps, half_widths, out):
 
 def dilate_disk(image, radius):
     """skimage.morphology.dilation(image, disk(radius)) for a 0/1 image, as a row-parallel kernel.
+
+    Bit-identical to skimage for radii below about the image size (the pipeline uses 10 and 1 on
+    full images). Beyond that skimage/scipy return wrong results, and this kernel still returns the
+    correct dilation.
 
     The disk is a stack of centred row segments, so a pixel is set when, for some row offset, the
     nearest nonzero pixel along that row is within the segment's half width. Pixels outside the

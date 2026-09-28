@@ -2,7 +2,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from .. import helperfuncs
-from .. import metrics
 from spoqc.core import raster
 from spoqc.core.figures import save_figure
 
@@ -114,8 +113,6 @@ def define_bounding_boxes(
     image = raster.load_intensity_image(
         sdata, spoqc_tmp_folder, modality, image_type, resolution, dim_x, dim_y, threads, staining=staining
     )
-    if ( modality == 'hqtr' ):
-        metrics.transcript_density.transcript_density_image.plot_transcript_density(sdata, figure_path, image_type, image)
 
     binary_image = raster.read_pixel_column(
         f'{spoqc_tmp_folder}/{prefix}_output_mask_smoothed_{suffix}', f"{prefix}_mask_smoothed", threads

@@ -54,6 +54,18 @@ def start_combining_masks(
     hqtr_belief_name = ''
     hqtr_mask_name = ''
     for type_of_belief in ['_smoothed', '']:
+        if type_of_belief == '':
+            # Known pre-existing failure, deliberately not fixed here (fixing it changes the step):
+            # 1. the modality loop at the end of the '_smoothed' pass overwrites `staining` (hqtr sets
+            #    it to None), so this pass would read hqpr_None_* files;
+            # 2. combined_beliefs sums the hard-coded *_beliefs_smoothed columns, which this pass
+            #    does not load.
+            # The pass used to die on the missing hqpr_None_* parquet; fail here with the reason.
+            raise NotImplementedError(
+                "combine_masks_zoom: the unsmoothed pass is broken (staining overwritten by the "
+                "modality loop; combined_beliefs hard-codes *_beliefs_smoothed); the smoothed "
+                "figures are complete"
+            )
         suf = ''
         if type_of_belief == '_smoothed':
            suf = '_smoothed'
@@ -143,6 +155,7 @@ def start_combining_masks(
             legend_dict={"no mask": "#000000", "1 mask": "#0000FF", "2 masks": "#008000", "all masks": "#FFFF00"}
         )
 
+        # Hard-coded *_smoothed columns: wrong for the unsmoothed pass (see the raise above).
         combined_beliefs = beliefs_df['hqcr_beliefs_smoothed'] + beliefs_df[f'hqpr_{staining}_beliefs_smoothed'] + beliefs_df['hqtr_beliefs_smoothed']
         combined_beliefs /= 3
 
@@ -176,6 +189,8 @@ def start_combining_masks(
 
         for modality in ['hqpr', 'hqtr']:
 
+            # Overwrites the `staining` argument, which the next type_of_belief pass still needs
+            # (see the raise at the top of the loop).
             if modality == 'hqtr':
                 staining = None
             else:

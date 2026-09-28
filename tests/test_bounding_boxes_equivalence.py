@@ -300,9 +300,19 @@ def write_density(tmp, density):
     )
 
 
+def is_density_figure(event):
+    """The reference's 'transcript_density' figure, a duplicate of the hqtr_metrices one that the
+    new bounding-box step no longer writes (user decision: one figure per plot)."""
+    if event[0] == "transcript_density_figure":
+        return True
+    return event[0] == "plot_pixels" and event[1][1][3] == ("str", "'transcript_density'")
+
+
 def assert_same(expected, actual):
     boxes_e, txt_e, events_e = expected
     boxes_a, txt_a, events_a = actual
+    events_e = [e for e in events_e if not is_density_figure(e)]
+    assert not any(is_density_figure(e) for e in events_a), "bounding boxes wrote the density figure"
     assert snapshot(boxes_a) == snapshot(boxes_e), (boxes_e, boxes_a)
     assert all(type(v) is float for box in boxes_a for v in box)
     assert txt_a == txt_e
@@ -528,3 +538,34 @@ def test_bounding_box_mutant_is_caught(tmp_path, name):
     broken = mutant(bounding_boxes, *BOUNDING_BOX_MUTANTS[name])
     kwargs = dict(staining="1", dilation_radius=1, minum_num_pixel=12 * 17)
     assert mutant_differs(tmp_path, broken, "hqpr", kwargs), f"mutant {name!r} survived"
+
+
+def test_read_pixel_column_raises_on_an_empty_directory(tmp_path):
+    with pytest.raises(FileNotFoundError, match="no .parquet part files"):
+        raster.read_pixel_column(str(tmp_path), "v", 2)
+
+
+def test_read_pixel_column_raises_on_nulls(tmp_path):
+    pq.write_table(pa.table({"v": pa.array([1, None, 3], type=pa.int8())}), f"{tmp_path}/part.0.parquet")
+    with pytest.raises(ValueError, match="1 nulls"):
+        raster.read_pixel_column(str(tmp_path), "v", 2)
+
+
+def test_read_pixel_column_raises_on_parts_with_different_types(tmp_path):
+    pq.write_table(pa.table({"v": pa.array([1, 2], type=pa.int8())}), f"{tmp_path}/part.0.parquet")
+    pq.write_table(pa.table({"v": pa.array([3, 4], type=pa.int64())}), f"{tmp_path}/part.1.parquet")
+    with pytest.raises(ValueError, match="disagree"):
+        raster.read_pixel_column(str(tmp_path), "v", 2)
+
+
+def test_hqtr_bounding_boxes_no_longer_write_the_duplicate_density_figure(tmp_path):
+    mask, image, density = scene()
+    write_mask(str(tmp_path), "hqtr", mask, npartitions=4)
+    write_density(str(tmp_path), density)
+    imagedim = helperfuncs.ImageDimStruct(np.float64(0.0), np.float64(0.0), np.float64(190.0), np.float64(160.0))
+    args = (fake_sdata(image), str(tmp_path / "fig"), str(tmp_path), "hqtr", imagedim, *mask.shape, 2)
+    expected = run_define(ref, *args, density=density, dilation_radius=1)
+    actual = run_define(bounding_boxes, *args, density=density, dilation_radius=1)
+    assert sum(map(is_density_figure, expected[2])) == 1
+    assert not any(map(is_density_figure, actual[2]))
+    assert_same(expected, actual)
