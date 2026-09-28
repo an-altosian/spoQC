@@ -15,6 +15,9 @@ def get_hqtr(
         nstds_p=None,
     ):
 
+    # In-process handoff from clustering to refinement; refinement run on its own reads it back instead.
+    beliefs = None
+
     if ( CONST.STEP in ['all', 'unittest', 'hqtr', 'hqtr_metrices'] ):
 
         image_analysis.structure_analysis.start_image_struc_analyis(
@@ -67,7 +70,7 @@ def get_hqtr(
 
     if ( CONST.STEP in ['all', 'unittest', 'hqtr', 'hqtr_clustering'] ):
 
-        image_analysis.pixel_scoring_dask.start_pixel_qc(
+        beliefs = image_analysis.pixel_scoring_dask.start_pixel_qc(
             sdata,
             CONST.FIGURE_PATH,
             spoqc_tmp_folder,
@@ -99,7 +102,8 @@ def get_hqtr(
                 dim_x,
                 dim_y,
                 1.5,
-                15
+                15,
+                beliefs_raw=beliefs,
         )
 
         print('[finish]')

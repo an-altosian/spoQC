@@ -14,9 +14,13 @@ def get_hqpr(
     ):
 
     # Memory depends on threads. The more threads you choose the more memory you need.
+    # In-process handoffs between the steps below; a step run on its own reads them back instead.
+    background_intensity = None
+    beliefs = None
+
     if ( CONST.STEP in ['all', 'unittest', 'hqpr', 'hqpr_metrices'] ):
         
-        image_analysis.structure_analysis.start_image_struc_analyis(
+        background_intensity = image_analysis.structure_analysis.start_image_struc_analyis(
             sdata,
             CONST.FIGURE_PATH,
             spoqc_tmp_folder,
@@ -35,7 +39,7 @@ def get_hqpr(
 
     if ( CONST.STEP in ['all', 'unittest', 'hqpr', 'hqpr_clustering'] ):
 
-        image_analysis.pixel_scoring_dask.start_pixel_qc(
+        beliefs = image_analysis.pixel_scoring_dask.start_pixel_qc(
             sdata,
             CONST.FIGURE_PATH,
             spoqc_tmp_folder,
@@ -52,6 +56,7 @@ def get_hqpr(
             staining=CONST.STAINING,
             thresh_p=thresh_p,
             nstds_p=nstds_p,
+            background_intensity=background_intensity,
         )
 
         print('[finish]')   
@@ -67,6 +72,7 @@ def get_hqpr(
                 1.5,
                 15,
                 staining=CONST.STAINING,
+                beliefs_raw=beliefs,
         )
 
         print('[finish]')

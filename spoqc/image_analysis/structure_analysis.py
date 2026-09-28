@@ -110,12 +110,7 @@ def start_image_struc_analyis(
     bin_edges = None
 
     if ( modality == 'hqpr' ):
-        background_intensity, hist, bin_edges = metrics.image.utility.estimate_background_intensity_dask(
-            sdata,
-            image_type,
-            resolution,
-            staining
-        )
+        background_intensity, hist, bin_edges = metrics.image.utility.estimate_background_intensity(xy_intensities)
 
     step = 'intensity'
     if ( step in steps and modality == 'hqpr' ):
@@ -204,3 +199,5 @@ def start_image_struc_analyis(
         pixel_homogeneity = metrics.image.homogenity.pixel_homogeneity(figure_path, texture_intensities, imagedim, 5)
         timer.stop()
         helperfuncs.nparr_to_parquet(pixel_homogeneity, step, spoqc_tmp_folder, tmp_suffix)
+
+    return background_intensity

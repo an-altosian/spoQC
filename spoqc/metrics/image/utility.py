@@ -1,6 +1,6 @@
+import numba
 import numpy as np
 import plotly.express as px
-import dask.array as da
 
 from ... import helperfuncs
 from spoqc.core.figures import save_figure
@@ -56,31 +56,42 @@ def pixel_intensity_qc(figure_path, intensities, background_intensity, hist, bin
     return signal_noise_ratio_log2fc
 
 
-def estimate_background_intensity_dask(sdata, image_type, resolution, staining, nbins=100, range_=None):
+UINT16_VALUES = 1 << 16
+
+
+@numba.njit(parallel=True, cache=True)
+def _uint16_counts(image, n_threads):
+    """Exact np.bincount(image.ravel(), minlength=65536) of a 2-D uint16 image, one partial count per thread."""
+    n_rows, n_cols = image.shape
+    partial = np.zeros((n_threads, UINT16_VALUES), dtype=np.int64)
+    for t in numba.prange(n_threads):
+        for i in range(t * n_rows // n_threads, (t + 1) * n_rows // n_threads):
+            for j in range(n_cols):
+                partial[t, image[i, j]] += 1
+    counts = np.zeros(UINT16_VALUES, dtype=np.int64)
+    for t in range(n_threads):
+        counts += partial[t]
+    return counts
+
+
+def estimate_background_intensity(image, nbins=100):
+    """Background intensity of a 2-D uint16 image: the centre of the most populated of `nbins`
+    equal bins over [min, max]. Returns (background, hist, bin_edges).
+
+    One pass over the pixels counts every uint16 value; the histogram is then binned from those
+    counts with the same np.histogram(bins=nbins, range=(min, max)) arithmetic that
+    da.histogram applied per chunk, so hist and bin_edges are exactly origin/dev's.
     """
-    nbins: number of histogram bins
-    range_: optional (min, max); if None, computed lazily with dask
-    """
-    intensities = sdata[image_type][resolution].image.data[int(staining)]
-    intensities.ravel()
-
-    if not hasattr(intensities, "chunks"):
-        raise TypeError("Pass a dask.array for the Dask implementation.")
-
-    # Compute min/max lazily if not supplied (cheap: just scalars)
-    if range_ is None:
-        vmin = da.nanmin(intensities)
-        vmax = da.nanmax(intensities)
-        vmin, vmax = da.compute(vmin, vmax)
-        if not np.isfinite(vmin) or not np.isfinite(vmax):
-            raise ValueError("Non-finite min/max encountered.")
-        if vmin == vmax:
-            vmax = vmin + 1.0
-        range_ = (float(vmin), float(vmax))
-
-    # Dask builds the histogram in a reduction; result is tiny (nbins) -> safe to .compute()
-    hist, bin_edges = da.histogram(intensities, bins=nbins, range=range_)
-    hist, bin_edges = da.compute(hist, bin_edges)
+    if image.dtype != np.uint16:
+        raise TypeError(f"estimate_background_intensity needs a uint16 image, got {image.dtype}")
+    counts = _uint16_counts(image, numba.get_num_threads())
+    values = np.flatnonzero(counts)
+    vmin, vmax = values[0], values[-1]
+    if vmin == vmax:
+        vmax = vmin + 1.0
+    range_ = (float(vmin), float(vmax))
+    hist = np.histogram(values.astype(np.uint16), bins=nbins, range=range_, weights=counts[values])[0]
+    bin_edges = np.linspace(range_[0], range_[1], num=nbins + 1)
 
     max_bin_idx = int(np.argmax(hist))
     # center of the winning bin
