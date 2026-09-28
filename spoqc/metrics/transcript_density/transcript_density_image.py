@@ -47,11 +47,6 @@ def generate_transcript_density_image(
 
     xy_transcript_density = np.array(transcript_density_list).reshape(dim_x, dim_y)
 
-    img_extent = sd.get_extent(sdata[image_type], coordinate_system='global')
-    imagedim = helperfuncs.ImageDimStruct(img_extent['x'][0], img_extent['y'][0],
-                                        img_extent['x'][1], img_extent['y'][1])
-    nuclei_centroid_coords = sd.get_centroids(sdata['nucleus_boundaries'], coordinate_system='global').compute()
-
     # kernel_size = 2 * r + 1
 
     # Create circular kernel (disk mask)
@@ -67,30 +62,39 @@ def generate_transcript_density_image(
     # xy_kernel_transcript_density = xy_kernel_transcript_density.astype(np.uint16) # conversion needed for cv2
 
     if ( figure_path != None ):
-
-        if ( flip ):
-            helperfuncs.plot_pixels(
-                figure_path,
-                xy_kernel_transcript_density,
-                imagedim,
-                'transcript_density',
-                'Transcript Density', 
-                'gray',
-                True,
-                True,
-                points=nuclei_centroid_coords
-            )
-        else:
-            helperfuncs.plot_pixels(
-                figure_path,
-                np.flipud(xy_kernel_transcript_density),
-                imagedim,
-                'transcript_density',
-                'Transcript Density', 
-                'gray',
-                True,
-                True,
-                points=nuclei_centroid_coords
-            )
+        plot_transcript_density(sdata, figure_path, image_type, xy_kernel_transcript_density, flip=flip)
 
     return xy_kernel_transcript_density.flatten()
+
+
+def plot_transcript_density(sdata, figure_path, image_type, xy_kernel_transcript_density, *, flip=False):
+    """Write the 'transcript_density' figure of a (flipped) density image, with the nucleus centroids."""
+    img_extent = sd.get_extent(sdata[image_type], coordinate_system='global')
+    imagedim = helperfuncs.ImageDimStruct(img_extent['x'][0], img_extent['y'][0],
+                                        img_extent['x'][1], img_extent['y'][1])
+    nuclei_centroid_coords = sd.get_centroids(sdata['nucleus_boundaries'], coordinate_system='global').compute()
+
+    if ( flip ):
+        helperfuncs.plot_pixels(
+            figure_path,
+            xy_kernel_transcript_density,
+            imagedim,
+            'transcript_density',
+            'Transcript Density', 
+            'gray',
+            True,
+            True,
+            points=nuclei_centroid_coords
+        )
+    else:
+        helperfuncs.plot_pixels(
+            figure_path,
+            np.flipud(xy_kernel_transcript_density),
+            imagedim,
+            'transcript_density',
+            'Transcript Density', 
+            'gray',
+            True,
+            True,
+            points=nuclei_centroid_coords
+        )

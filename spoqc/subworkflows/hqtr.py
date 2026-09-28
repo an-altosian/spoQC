@@ -117,6 +117,7 @@ def get_hqtr(
             dim_y,
             imagedim,
             'raw',
+            CONST.THREADS,
             dilation_radius=1
         )
 

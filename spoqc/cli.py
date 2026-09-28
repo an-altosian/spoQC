@@ -703,6 +703,7 @@ def run(CONST):
             dim_x,
             dim_y,
             CONST.STAINING,
+            CONST.THREADS,
             celltype_refined=False
         )
 

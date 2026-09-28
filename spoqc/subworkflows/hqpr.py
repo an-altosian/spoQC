@@ -85,6 +85,7 @@ def get_hqpr(
             dim_y,
             imagedim,
             'raw',
+            CONST.THREADS,
             staining=CONST.STAINING,
         )
 

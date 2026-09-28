@@ -9,6 +9,7 @@ from matplotlib_venn import venn3
 
 from .. import helperfuncs
 from .. import metrics
+from spoqc.core import raster
 
 def start_combining_masks(
         sdata,
@@ -20,6 +21,7 @@ def start_combining_masks(
         dim_x,
         dim_y,
         staining,
+        threads,
         *,
         celltype_refined=False
 ):
@@ -179,27 +181,14 @@ def start_combining_masks(
             else:
                 staining = '0'
 
-            if ( staining ):
-                spoqc_tmp_folder = f'{spoqc_tmp_folder}/metrices/{modality}/{staining}/'
-            else:
-                spoqc_tmp_folder = f'{spoqc_tmp_folder}/metrices/{modality}'
-
-            xy_intensities = None
-            intensities = None
+            # Flipped intensity image; for hqtr the transcript density image saved by the metrices step.
+            xy_intensities = raster.load_intensity_image(
+                sdata, spoqc_tmp_folder, modality, image_type, resolution, dim_x, dim_y, threads, staining=staining
+            )
             if ( modality == 'hqtr' ):
-                # Intensities already flipped
-                intensities = metrics.transcript_density.transcript_density_image.generate_transcript_density_image(
-                    sdata,
-                    figure_path,
-                    imagedim,
-                    image_type,
-                    resolution
+                metrics.transcript_density.transcript_density_image.plot_transcript_density(
+                    sdata, figure_path, image_type, xy_intensities
                 )
-                xy_intensities = intensities.reshape(dim_x, dim_y)
-            else:
-                xy_intensities = sdata[image_type][resolution].image.values[int(staining)]
-                xy_intensities = np.flipud(xy_intensities)
-                intensities = xy_intensities.flatten()
             
             # Plot intensities
             name = 'input'
