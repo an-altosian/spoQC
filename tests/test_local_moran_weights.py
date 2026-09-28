@@ -72,3 +72,27 @@ def test_mutant_leafsize_16_is_detected(monkeypatch):
     monkeypatch.setattr(local_moran_I, "KNN_LEAFSIZE", 16)
     with pytest.raises(AssertionError):
         assert_knn_weights_equal(xy)
+
+
+def _near_tie_neighbourhood(ulps, seed=5):
+    """Point 0 at the origin; K other points on a circle of radius 40, a (K + 1)-th whose squared
+    distance is `ulps` ULPs larger, then far points: the gap at point 0's cut-off is `ulps` ULPs."""
+    rng = np.random.default_rng(seed)
+    angles = rng.permutation(np.linspace(0, 2 * np.pi, K + 1, endpoint=False))
+    ring = np.column_stack((np.cos(angles), np.sin(angles))) * 40.0
+    d2 = float((ring[-1] ** 2).sum())
+    target = d2
+    for _ in range(ulps):
+        target = np.nextafter(target, np.inf)
+    ring[-1] *= np.sqrt(target / d2)
+    far = rng.uniform(150, 300, (40, 2))
+    return np.concatenate([[[0.0, 0.0]], ring, far]), target - d2
+
+
+@pytest.mark.parametrize("ulps", [1, 2, 5, 40])
+def test_near_ties_at_the_cutoff_take_the_kd_tree_fallback(ulps):
+    xy, gap = _near_tie_neighbourhood(ulps)
+    assert gap > 0 or ulps == 0
+    assert not local_moran_I._unambiguous_knn(xy, K, np.empty((len(xy), K), dtype=np.int64))
+    assert_knn_weights_equal(xy)
+

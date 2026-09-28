@@ -50,6 +50,12 @@ def fill_outside_from_nearest_inside(coords, feat, local_I, outside_mask, thread
 
 # libpysal.cg.kdtree.KDTree's leaf size, which libpysal's KNN.from_array builds its tree with
 KNN_LEAFSIZE = 10
+# Distance gaps at the k-th neighbour within this many relative ULPs take the KD-tree fallback. A
+# cell's min-distance collects about one rounding (<= 1 ULP of a value no larger than the
+# distance) per tree level, and a neighbourhood of <= 2,560 cells at leaf size 10 is <= 9 levels
+# deep; 64 is 7x that.
+KNN_TIE_ULPS = 64
+EPS = np.finfo(np.float64).eps
 
 
 @njit(nogil=True, fastmath=False)
@@ -58,7 +64,13 @@ def _unambiguous_knn(coords, k, neighbours):
     For each point, its k nearest other points by squared distance (dx * dx + dy * dy, as
     scipy's KD-tree computes it), ascending by position, into neighbours. Returns False, leaving
     neighbours incomplete, when some point's (k + 1)-th and (k + 2)-th smallest distances (itself
-    included) are equal: only then can the KD-tree's tie-breaking pick another set.
+    included) are within KNN_TIE_ULPS relative ULPs of each other.
+
+    Only then can the KD-tree return another set: while a member is not found yet, the tree's
+    heap holds a non-member, so its bound is at least the (k + 2)-th distance, and pruning the
+    member takes a cell min-distance overestimated by more than that gap. scipy updates cell
+    min-distances incrementally (query.cxx, nodeinfo::update_side_distance), one rounding per
+    level; the ties and near-ties it could resolve differently go to libpysal's own query.
     """
     n = coords.shape[0]
     d = np.empty(n)
@@ -68,7 +80,7 @@ def _unambiguous_knn(coords, k, neighbours):
             dy = coords[i, 1] - coords[j, 1]
             d[j] = dx * dx + dy * dy
         order = np.argsort(d, kind="mergesort")
-        if k + 1 < n and d[order[k]] == d[order[k + 1]]:
+        if k + 1 < n and d[order[k + 1]] - d[order[k]] <= KNN_TIE_ULPS * EPS * d[order[k]]:
             return False
         # the k + 1 nearest hold the point itself (distance 0, no tie at the boundary)
         chosen = np.sort(order[:k + 1])
