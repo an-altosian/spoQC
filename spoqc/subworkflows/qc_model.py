@@ -1,5 +1,6 @@
 #In[]
 import numpy as np
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
@@ -14,6 +15,28 @@ from spoqc.core.moran import moran as moran_test, queen_weights
 
 
 
+def scatter_grey_hue(df, hue, s):
+    """
+    `sns.scatterplot(data=df, x='x', y='y', hue=hue, s=s, palette='grey')` on the current axes,
+    without seaborn's per-point colour lookup.
+
+    seaborn maps a numeric hue through a dict keyed by every distinct value, one Python
+    lookup and one to_rgba per point (~0.8 s per 168k-cell plot). The same colours are
+    cmap(norm(value)) element-wise, so all points are drawn in one ax.scatter with
+    seaborn's marker defaults (white edge, linewidth .08 * sqrt(s)); seaborn itself then
+    draws only the two extreme rows, which fixes the same norm limits and produces the
+    same (brief, as seaborn picks for many values) legend entries and axis labels.
+    """
+    ax = plt.gca()
+    values = df[hue].to_numpy()
+    norm = mpl.colors.Normalize()
+    norm(values)  # autoscales to the data's min and max, as seaborn does
+    colors = sns.color_palette('grey', as_cmap=True)(norm(values))
+    ax.scatter(df['x'], df['y'], s=s, c=colors, edgecolor='w', linewidths=.08 * np.sqrt(s))
+    extremes = df.iloc[[int(np.argmin(values)), int(np.argmax(values))]]
+    sns.scatterplot(data=extremes, x='x', y='y', hue=hue, s=s, palette='grey', legend='brief')
+
+
 def plot_pca_scatter(df, figure_path, nPCs, flip=False):
     nplots = 5
     rows = int(np.ceil(nPCs/nplots))
@@ -24,7 +47,7 @@ def plot_pca_scatter(df, figure_path, nPCs, flip=False):
         ax = plt.gca()
         
         # Create a scatter plot with Seaborn
-        sns.scatterplot(data=df, x='x', y='y', hue=f'PC{i}', s=10, palette='grey')
+        scatter_grey_hue(df, f'PC{i}', 10)
 
         # Add labels and title
         plt.title(f'PC{i+1}')
@@ -48,7 +71,7 @@ def plot_pca_scatter(df, figure_path, nPCs, flip=False):
         ax = plt.gca()
 
         # Create a scatter plot with Seaborn
-        sns.scatterplot(data=df, x='x', y='y', hue=f'PC{i}', s=1, palette='grey')
+        scatter_grey_hue(df, f'PC{i}', 1)
 
         # Add labels and title
         plt.title(f'PC{i+1}')
