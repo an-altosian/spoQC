@@ -104,9 +104,9 @@ def calc_doublet_score(
     if ( sdata['table'].n_obs < 100 ):
         n_components = 2
 
-    # Accumulate ovrlpy's per-gene embedding with an in-place BLAS rank-1 update rather
-    # than a fresh (n_pixels, n_components) temporary per gene. Version-guarded; a no-op
-    # on any ovrlpy this shim was not written against. See spoqc/_ovrlpy_fast.py.
+    # Accumulate ovrlpy's per-gene embedding over each gene's nonzero rows only, rather
+    # than a fresh (n_pixels, n_components) temporary per gene. Bit-identical; raises on
+    # any ovrlpy this shim was not written against. See spoqc/_ovrlpy_fast.py.
     _ovrlpy_fast.install()
 
     ovrlp = ovrlpy.Ovrlp(

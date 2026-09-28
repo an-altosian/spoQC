@@ -10,16 +10,17 @@ A full-scale profile (913 Mpx, 42.6M transcripts, py-spy across all threads) put
 ovrlpy at **4261 s of the run's 6739 s of CPU -- 63%**, entered from
 `doublet_score.py`, and those two multiply lines alone at 1520 s of it.
 
-The accumulator is (n_pixels x n_components) x 8 B -- 60 MB for a 500 px patch at
-n_components=30, far past any L3 -- and ovrlpy allocates a fresh one of those per
+The accumulator is (n_pixels x n_components) x 4 B (float32, ovrlpy's dtype) --
+30 MB for a 500 px patch at n_components=30, far past any L3 -- and ovrlpy allocates a fresh one of those per
 gene as a temporary, then touches all of it. `_calculate_embedding_sparse`
 updates only the rows a gene is actually nonzero in, which removes the temporary
 and most of the traffic. It is bit-identical; see its docstring.
 
 Applied as a shim rather than an edit to site-packages, because a `pip install`
 would silently revert the latter. Pinned to the ovrlpy versions whose internals
-it reproduces; on any other version it declines to patch and ovrlpy's own code
-runs, so an upgrade cannot break -- it only stops helping.
+it reproduces; on any other version `install()` raises, because the pin in
+requirements.txt/pyproject.toml has been broken and the replacement is no longer
+known to be equivalent.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ def _calculate_embedding_sparse(genes, mask, components, **kwargs):
     """Drop-in replacement for ovrlpy._utils._calculate_embedding, skipping zero rows.
 
     The accumulation is bound by memory traffic, not arithmetic. With n_components=30 and
-    a 500x500 patch the accumulator is 30 x 250,000 x 8 B = **60 MB**, far beyond any L3,
+    a 500x500 patch the accumulator is 30 x 250,000 x 4 B = **30 MB**, far beyond any L3,
     and ovrlpy touches all of it once per gene per side. At the measured median of 6,492
     genes per patch that is on the order of a terabyte of DRAM traffic for ONE patch,
     which is why neither threads (ovrlpy's own 16: 0.91x) nor processes (4: 1.08x) help.
@@ -52,7 +53,7 @@ def _calculate_embedding_sparse(genes, mask, components, **kwargs):
 
     Adding `0.0 * factor_c` is a no-op, so those rows are skipped and the traffic falls
     with the mean nonzero fraction. Finding them costs one pass over `signal`
-    (n_pixels x 4 B = 1 MB) against the 120 MB the update itself moves -- about 1%.
+    (n_pixels x 4 B = 1 MB) against the 60 MB the update itself moves -- about 1%.
 
     Equivalence: `signal[rows, None] * factor[None, :]` then `+=` is the SAME pair of
     rounding steps as ovrlpy's `signal[:, None] * factor[None, :]` then `+=`, on the same
@@ -64,9 +65,11 @@ def _calculate_embedding_sparse(genes, mask, components, **kwargs):
     break that argument (`0.0 * inf` is NaN, which ovrlpy propagates and this would not),
     so they are rejected rather than silently handled.
 
-    Measured on the real dataset, whole compute_VSI stage, 16 workers, matched cache:
-    4839.1 s -> 2455.6 s with the process-parallel loop below; max abs difference in the
-    final integrity_map 6.556511e-07, with ZERO pixels past 1e-06.
+    The accumulator must keep ovrlpy's dtype. ovrlpy fits its PCA on float32 pseudocells,
+    so `components` is float32 and ovrlpy sums in float32; an earlier version of this
+    shim upcast to float64; the real integrity_map then differed from stock by up to
+    6.6e-07 (measured together with a since-dropped process-parallel loop), and a
+    synthetic end-to-end run by 3.0e-07 from the upcast alone. The dtype now follows `np.result_type(signal, factor)`, exactly as ovrlpy's product does.
     """
     from ovrlpy._kde import kde_2d_discrete
 
@@ -87,7 +90,7 @@ def _calculate_embedding_sparse(genes, mask, components, **kwargs):
         if len(gene) < 2:
             continue
 
-        factor = np.asarray(components[:, i], dtype=np.float64)
+        factor = components[:, i]
         if not np.isfinite(factor).all():
             raise ValueError(
                 f"non-finite PCA loading for gene index {i}: skipping zero-signal rows is "
@@ -108,40 +111,39 @@ def _calculate_embedding_sparse(genes, mask, components, **kwargs):
             if rows.size == 0:
                 continue
 
+            # The accumulator takes ovrlpy's dtype: signal x factor, as in
+            # `signal[:, None] * factor[None, :]`. ovrlpy's PCA is fitted on float32
+            # pseudocells, so in production both are float32 and so is the sum.
+            acc_dtype = np.result_type(signal.dtype, factor.dtype)
             if which == "top":
                 if top_acc is None:
-                    top_acc = np.zeros((n_pixels, n_components), dtype=np.float64)
+                    top_acc = np.zeros((n_pixels, n_components), dtype=acc_dtype)
                 target = top_acc
             else:
                 if bottom_acc is None:
-                    bottom_acc = np.zeros((n_pixels, n_components), dtype=np.float64)
+                    bottom_acc = np.zeros((n_pixels, n_components), dtype=acc_dtype)
                 target = bottom_acc
 
-            # float32 signal x float64 factor promotes to float64, as in the original.
-            target[rows] += (
-                np.asarray(signal[rows], dtype=np.float64)[:, None] * factor[None, :]
-            )
+            target[rows] += signal[rows][:, None] * factor[None, :]
 
     return (0 if top_acc is None else top_acc, 0 if bottom_acc is None else bottom_acc)
 
 
 def install() -> bool:
-    """Patch ovrlpy's embedding accumulation if its version is one we reproduce.
-
-    Returns True if the patch was applied.
-    """
+    """Patch ovrlpy's embedding accumulation; raise if ovrlpy is not a version it reproduces."""
     import ovrlpy
     from ovrlpy import _ovrlp, _utils
 
     version = getattr(ovrlpy, "__version__", None)
     if version not in SUPPORTED_OVRLPY_VERSIONS:
-        print(
-            f"[NOTE] ovrlpy {version} is not one of {SUPPORTED_OVRLPY_VERSIONS}; "
-            "keeping its own embedding accumulation"
+        raise RuntimeError(
+            f"ovrlpy {version} is installed, but spoqc._ovrlpy_fast reproduces the internals "
+            f"of ovrlpy {', '.join(SUPPORTED_OVRLPY_VERSIONS)} only (the version pinned in "
+            "requirements.txt and pyproject.toml). Install the pinned ovrlpy, or re-verify "
+            "_calculate_embedding_sparse against the new version and add it to "
+            "SUPPORTED_OVRLPY_VERSIONS."
         )
-        return False
 
     _utils._calculate_embedding = _calculate_embedding_sparse
     # _ovrlp imported the symbol directly, so it needs rebinding too.
     _ovrlp._calculate_embedding = _calculate_embedding_sparse
-    return True

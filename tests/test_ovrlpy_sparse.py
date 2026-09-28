@@ -40,15 +40,20 @@ def _run(fn, mask, components, items, **kwargs):
     return fn(queue, mask, components, bandwidth=1.0, dtype=np.float32, **kwargs)
 
 
+@pytest.mark.parametrize("components_dtype", [np.float32, np.float64])
 @pytest.mark.parametrize(
     "n_genes,side,n_components,sparsity",
     [(40, 60, 21, 0.3), (120, 90, 30, 0.3), (60, 80, 30, 0.9)],
 )
-def test_bit_identical_to_ovrlpy(n_genes, side, n_components, sparsity):
-    """The headline claim, across dense and very sparse masks."""
+def test_bit_identical_to_ovrlpy(n_genes, side, n_components, sparsity, components_dtype):
+    """The headline claim, across dense and very sparse masks.
+
+    float32 is the production dtype: ovrlpy fits its PCA on float32 pseudocells, so
+    `pca.components_` is float32 and ovrlpy accumulates in float32.
+    """
     rng = np.random.default_rng(0)
     mask = rng.random((side, side)) > sparsity
-    components = rng.standard_normal((n_components, n_genes))
+    components = rng.standard_normal((n_components, n_genes)).astype(components_dtype)
     items = _items(n_genes, side, rng)
 
     expected = _run(ovrlpy_original, mask, components, items)
@@ -132,3 +137,75 @@ def test_non_finite_loading_is_rejected_not_silently_handled():
 
     with pytest.raises(ValueError, match="non-finite"):
         _run(_calculate_embedding_sparse, mask, components, _items(3, side, rng))
+
+
+def _synthetic_transcripts(seed=0, n=60_000, n_genes=40, n_cells=200, side=300.0):
+    """Clustered transcripts: cells of 5 types, 8 genes per type, so ovrlpy finds pseudocells."""
+    import pandas as pd
+
+    rng = np.random.default_rng(seed)
+    centres = rng.uniform(0, side, (n_cells, 2))
+    cell_type = rng.integers(0, 5, n_cells)
+    cell = rng.integers(0, n_cells, n)
+    xy = centres[cell] + rng.normal(0, 3, (n, 2))
+    gene = (cell_type[cell] * 8 + rng.integers(0, 8, n)) % n_genes
+    return pd.DataFrame({
+        "gene": [f"g{i}" for i in gene],
+        "x": xy[:, 0],
+        "y": xy[:, 1],
+        "z": rng.uniform(0, 10, n),
+    })
+
+
+def _in_gene_order(fn):
+    """Run `fn` on the patch's genes in gene-index order.
+
+    ovrlpy 1.2.0 fills each patch's queue from `patch_df.group_by("gene")`, whose order
+    polars does not maintain, so the float32 sum over genes -- stock or shim -- differs
+    run to run in the last bits. Fixing the order leaves only the accumulation to differ.
+    """
+    def ordered(genes, mask, components, **kwargs):
+        items = []
+        while not genes.empty():
+            items.append(genes.get())
+        queue: SimpleQueue = SimpleQueue()
+        for item in sorted(items, key=lambda item: item[0]):
+            queue.put(item)
+        return fn(queue, mask, components, **kwargs)
+    return ordered
+
+
+def test_compute_vsi_integrity_map_is_bit_identical_end_to_end(monkeypatch):
+    """The whole compute_VSI stage on one fitted model: stock accumulation, then the shim.
+
+    The model is fitted once, so `pca.components_` (float32, as in production) is shared;
+    n_workers=1 and a fixed gene order fix the order the embeddings are summed in. The
+    only difference between the two passes is the accumulation. The stock pass is run
+    twice to prove the ordering makes it reproducible, so the comparison can be exact.
+    """
+    from ovrlpy import _ovrlp
+
+    model = ovrlpy.Ovrlp(
+        _synthetic_transcripts(), n_components=5, n_workers=1, random_state=0,
+        patch_length=100,
+    )
+    model.process_coordinates(gridsize=1, n_iter=20)
+    model.fit_transcripts(fit_umap=False)
+    assert model.pca.components_.dtype == np.float32, "fixture must match production dtype"
+
+    def integrity_map(fn):
+        monkeypatch.setattr(_ovrlp, "_calculate_embedding", _in_gene_order(fn))
+        model.compute_VSI()
+        return model.integrity_map.copy()
+
+    stock = integrity_map(ovrlpy_original)
+    assert np.array_equal(stock, integrity_map(ovrlpy_original)), "stock must reproduce"
+    assert np.count_nonzero(stock) > stock.size // 4, "fixture must produce signal"
+
+    fast = integrity_map(_calculate_embedding_sparse)
+
+    assert fast.dtype == stock.dtype
+    assert np.array_equal(stock, fast), (
+        f"max abs diff {np.abs(stock - fast).max():.3e} over "
+        f"{np.count_nonzero(stock != fast):,} of {stock.size:,} pixels"
+    )
