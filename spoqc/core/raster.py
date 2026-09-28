@@ -4,7 +4,7 @@ dilate a binary mask with a disk, and box its 8-connected components.
 Every function is exact (bit-identical to the skimage/dask code it replaces; for dilate_disk while
 the disk radius is below about the image size, see there) and splits its work
 over `threads` (row blocks, parquet row groups or dask chunks); the numba kernels use the numba
-pool, which cli.run sizes to CONST.THREADS.
+pool, which spoqc.core.threads.configure sizes (NUMBA_NUM_THREADS) to the run's thread budget.
 """
 
 import os

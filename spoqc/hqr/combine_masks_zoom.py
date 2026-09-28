@@ -8,7 +8,6 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib_venn import venn3
 
 from .. import helperfuncs
-from .. import metrics
 from spoqc.core import raster
 
 def start_combining_masks(
@@ -200,10 +199,6 @@ def start_combining_masks(
             xy_intensities = raster.load_intensity_image(
                 sdata, spoqc_tmp_folder, modality, image_type, resolution, dim_x, dim_y, threads, staining=staining
             )
-            if ( modality == 'hqtr' ):
-                metrics.transcript_density.transcript_density_image.plot_transcript_density(
-                    sdata, figure_path, image_type, xy_intensities
-                )
             
             # Plot intensities
             name = 'input'

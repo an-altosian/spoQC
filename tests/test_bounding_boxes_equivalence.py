@@ -27,6 +27,7 @@ from skimage.morphology import dilation, disk
 import reference_bounding_boxes_66736f2 as ref
 from spoqc import helperfuncs
 from spoqc.core import raster
+from spoqc.hqr import combine_masks_zoom
 from spoqc.image_analysis import bounding_boxes
 from spoqc.metrics.transcript_density import transcript_density_image
 
@@ -177,7 +178,7 @@ def captured(module, density=None):
 
     density: for synthetic hqtr runs, the density image the reference regenerates (its
     generate_transcript_density_image is replaced by one that returns it and records the
-    transcript density figure the way plot_transcript_density does in the new code).
+    transcript density figure it would write). The new code reads the saved density instead.
     """
     events = []
 
@@ -206,25 +207,22 @@ def captured(module, density=None):
                 lambda fig, *paths, **kw: events.append(("save", paths, snapshot(kw))),
             )
         )
-        if density is not None:
-            if module is ref:
-                stack.enter_context(
-                    mock.patch.object(
-                        ref.metrics.transcript_density.transcript_density_image,
-                        "generate_transcript_density_image",
-                        fake_generate,
-                    )
+        if density is not None and module is ref:
+            stack.enter_context(
+                mock.patch.object(
+                    ref.metrics.transcript_density.transcript_density_image,
+                    "generate_transcript_density_image",
+                    fake_generate,
                 )
-            else:
-                stack.enter_context(
-                    mock.patch.object(
-                        transcript_density_image,
-                        "plot_transcript_density",
-                        lambda sdata, figure_path, image_type, image: record(
-                            "transcript_density_figure"
-                        )(sdata is not None, figure_path, image_type, image),
-                    )
+            )
+        if module is not ref:
+            stack.enter_context(
+                mock.patch.object(
+                    transcript_density_image,
+                    "generate_transcript_density_image",
+                    mock.Mock(side_effect=AssertionError("density regenerated")),
                 )
+            )
         yield events
 
 
@@ -569,3 +567,67 @@ def test_hqtr_bounding_boxes_no_longer_write_the_duplicate_density_figure(tmp_pa
     assert sum(map(is_density_figure, expected[2])) == 1
     assert not any(map(is_density_figure, actual[2]))
     assert_same(expected, actual)
+
+
+class FakeSdata(dict):
+    """fake_sdata plus the sdata.labels access of the zoom step."""
+
+
+def test_combine_masks_zoom_no_longer_writes_the_duplicate_density_figure(tmp_path):
+    """The zoom step reads the saved density for its hqtr input figure and writes no full-image
+    'transcript_density' figure (a duplicate of the hqtr_metrices one; user decision: one figure
+    per plot). Its unsmoothed pass still raises the pre-existing NotImplementedError.
+
+    Pre-existing (origin/dev too): combined_beliefs reads *_beliefs_smoothed columns that beliefs_df
+    does not have, so the step dies with a KeyError before its modality loop. The test pins that,
+    then gives beliefs_df those aliases to reach the loop the duplicate figure was written from."""
+    mask, image, density = scene()
+    tmp = str(tmp_path)
+    pd.DataFrame(
+        {"hqcr_beliefs_smoothed": mask.ravel().astype(np.float32), "hqcr_mask_smoothed": mask.ravel()}
+    ).to_parquet(f"{tmp}/hqcr_output_mask_smoothed_raw.parquet")
+    write_mask(tmp, "hqpr_0", mask, npartitions=2)
+    write_mask(tmp, "hqtr", mask, npartitions=2)
+    write_density(tmp, density)
+    labels = types.SimpleNamespace(image=xr.DataArray((mask > 0).astype(np.int32), dims=("y", "x")))
+    sdata = FakeSdata(fake_sdata(image))
+    sdata.labels = {seg: {RESOLUTION: labels} for seg in ("cell_labels", "nucleus_labels")}
+    imagedim = helperfuncs.ImageDimStruct(0.0, 0.0, 190.0, 160.0)
+    suffixes = []
+
+    def plot(figure_path, image, imagedim, suffix, *args, **kwargs):
+        suffixes.append(suffix)
+
+    args = (sdata, str(tmp_path / "fig"), tmp, IMAGE_TYPE, RESOLUTION, imagedim, *mask.shape, "0", 2)
+    with (
+        mock.patch.object(helperfuncs, "plot_pixels", plot),
+        pytest.raises(KeyError, match="hqcr_beliefs_smoothed"),
+    ):
+        combine_masks_zoom.start_combining_masks(*args)
+    suffixes.clear()
+
+    def frame_with_smoothed_aliases(data):
+        frame = pd.DataFrame(data)
+        if "hqcr_beliefs" in frame:
+            for column in list(frame.columns):
+                frame[f"{column}_smoothed"] = frame[column]
+        return frame
+
+    with (
+        mock.patch.object(helperfuncs, "plot_pixels", plot),
+        mock.patch.object(
+            combine_masks_zoom, "pd", types.SimpleNamespace(DataFrame=frame_with_smoothed_aliases, read_parquet=pd.read_parquet)
+        ),
+        mock.patch.object(
+            transcript_density_image,
+            "generate_transcript_density_image",
+            mock.Mock(side_effect=AssertionError("density regenerated")),
+        ),
+        mock.patch.object(raster, "load_intensity_image", wraps=raster.load_intensity_image) as load,
+        pytest.raises(NotImplementedError, match="unsmoothed pass"),
+    ):
+        combine_masks_zoom.start_combining_masks(*args)
+    assert "transcript_density" not in suffixes, suffixes
+    assert "input_transcript_densities_zoom_smoothed" in suffixes, suffixes
+    assert "input_pixel_intensities_zoom_smoothed" in suffixes, suffixes
+    assert [c.args[2] for c in load.call_args_list] == ["hqpr", "hqtr"]
