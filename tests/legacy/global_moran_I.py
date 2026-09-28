@@ -1,12 +1,12 @@
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import geopandas as gpd
 import scipy.sparse as sp
 
+from libpysal.weights import Queen
 
 from ... import helperfuncs
-from spoqc.core.figures import save_figure
-from spoqc.core.moran import queen_weights
 
 # Vectorized Moran's I for all genes at once, given a shared weights matrix.
 # Degenerate genes (zero variance) are filled with NaN, matching what
@@ -33,9 +33,13 @@ def calculate_global_moran_I_values(sdata, figure_path, spoqc_tmp_folder):
 
     genes_list = np.array(rna_adata.var_names)
 
+    coords = rna_adata.obsm['spatial']
+    gdf = gpd.GeoDataFrame({'x': coords[:, 0], 'y': coords[:, 1]},
+                            geometry=gpd.points_from_xy(coords[:, 0], coords[:, 1]))
+
     # Create spatial-neighbor weights using queen contiguity, once for all genes
     # (coordinates, and therefore the weights matrix, don't depend on the gene).
-    w = queen_weights(rna_adata.obsm['spatial'])
+    w = Queen.from_dataframe(gdf)
     w.transform = "r"
     weights = w.sparse
 
@@ -59,7 +63,8 @@ def calculate_global_moran_I_values(sdata, figure_path, spoqc_tmp_folder):
     )
     helperfuncs.apply_general_plotly_layout(fig, True)
     fig.write_html(f"{figure_path}/contamination_global_morans_I.html")
-    save_figure(fig, f"{figure_path}/contamination_global_morans_I.png", f"{figure_path}/contamination_global_morans_I.pdf", scale=3)
+    fig.write_image(f"{figure_path}/contamination_global_morans_I.png", scale=3)
+    fig.write_image(f"{figure_path}/contamination_global_morans_I.pdf", scale=3)
 
     helperfuncs.df_to_parquet(data_sorted, 'ambient', spoqc_tmp_folder, [], 'genes')
     return data_sorted
