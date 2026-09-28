@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 
 from ... import helperfuncs
+from ...core import groupreduce
 
 STRUCTURE_METRICS = ['edge_strength', 'energy', 'relevance', 'entropy']
 ANTI_STRUCTURE_METRICS = ['homogenity', 'uniformity']
@@ -18,8 +19,8 @@ def row_divisions(n_rows, chunk_size):
 def pixel_frame(columns, divisions):
     """Dask DataFrame over in-memory per-pixel columns, partitioned at `divisions`.
 
-    With origin/dev's divisions, dask's partition-wise reductions (the groupby means) and
-    the parquet part files come out the same as from origin/dev's pixel frame.
+    With origin/dev's divisions, the parquet part files come out the same as from
+    origin/dev's pixel frame.
     """
     n_rows = len(next(iter(columns.values())))
     stops = [*divisions[1:-1], n_rows]
@@ -60,7 +61,7 @@ def calc_pixel_score(
         dim_y,
         imagedim,
         plot_all_pixel_clusters,
-        chunk_size,
+        n_clusters,
     ):
 
     timer = helperfuncs.Timer()
@@ -71,17 +72,22 @@ def calc_pixel_score(
     if ( background_intensity == 0 ):
         background_intensity = 1
 
-    # Group by cluster and compute mean intensity, s_score, and as_score in a single pass.
+    # Mean intensity, s_score and as_score per cluster, as float64 sums in a fixed order.
+    # origin/dev's dask groupby-mean combined partitions in task-completion order, so its
+    # last bits (and its cluster order) varied run to run; this is deterministic.
     print("[NOTE] Get mean intensity, s and as scores for each cluster")
     timer.start()
-    frame = pixel_frame({'cluster': clusters, 's_score': s_score, 'as_score': as_score, 'intensity': intensity},
-                        row_divisions(len(clusters), chunk_size))
-    cluster_means_df = frame.groupby('cluster')[['intensity', 's_score', 'as_score']].mean().compute()
+    means = {}
+    for name, values in (('intensity', intensity), ('s_score', s_score), ('as_score', as_score)):
+        sums, counts = groupreduce.group_sum(clusters, values, n_clusters)
+        means[name] = sums / counts
+    # Since kmeans clusters might not find enough clusters, keep only the clusters that have pixels, in id order.
+    clusters_ids = [int(k) for k in np.flatnonzero(counts)]
+    cluster_means_df = pd.DataFrame({name: m[clusters_ids] for name, m in means.items()},
+                                    index=pd.Index(clusters_ids, name='cluster'))
     cluster_mean_int_df = cluster_means_df['intensity'].rename('mean_cluster_intensity')
     timer.stop()
 
-    # Since kmeans clusters might not find enough clusters I have to get all possible clsuter ids from the dataframe.
-    clusters_ids = list(cluster_mean_int_df.index)
     clusters_ids_arr = np.array(clusters_ids)
 
     print("[NOTE] Compare clusters to background")

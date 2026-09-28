@@ -6,7 +6,11 @@ flat elements offsets[g]:offsets[g + 1].
 
 from typing import Callable
 
+import numba
 import numpy as np
+
+# Rows per partial sum in group_sum. Fixed, so the summation order never depends on the thread count.
+GROUP_SUM_CHUNK = 1 << 20
 
 
 def group_offsets(group_idx: np.ndarray, n_groups: int) -> np.ndarray:
@@ -45,3 +49,29 @@ def ragged_reduce(values: np.ndarray, offsets: np.ndarray, reducer: Callable, ou
 def ragged_lists(values: list, offsets: np.ndarray) -> list:
     """One Python list per group."""
     return [values[a:b] for a, b in zip(offsets[:-1], offsets[1:])]
+
+
+@numba.njit(parallel=True)
+def _chunk_group_sums(group_idx, values, n_groups, chunk):
+    n_chunks = (len(group_idx) + chunk - 1) // chunk
+    sums = np.zeros((n_chunks, n_groups))
+    counts = np.zeros((n_chunks, n_groups), dtype=np.int64)
+    for c in numba.prange(n_chunks):
+        for i in range(c * chunk, min(len(group_idx), (c + 1) * chunk)):
+            sums[c, group_idx[i]] += values[i]
+            counts[c, group_idx[i]] += 1
+    return sums, counts
+
+
+def group_sum(group_idx: np.ndarray, values: np.ndarray, n_groups: int):
+    """Per-group float64 sum of values and element count, in a fixed order.
+
+    Each GROUP_SUM_CHUNK rows are summed in row order, then the chunk sums are added in chunk
+    order, so the result is identical for any thread count and run to run.
+    """
+    sums, counts = _chunk_group_sums(group_idx, values, n_groups, GROUP_SUM_CHUNK)
+    total, count = sums[0].copy(), counts[0].copy()
+    for c in range(1, len(sums)):
+        total += sums[c]
+        count += counts[c]
+    return total, count

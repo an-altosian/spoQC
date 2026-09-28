@@ -13,12 +13,24 @@ from .. import priors
 
 N_CLUSTERS = 100
 
+# The k-means features of each modality, in column order: the metrics structure analysis writes,
+# in the order it writes them. origin/dev took every *{suffix}.parquet in os.listdir order,
+# which the filesystem decides (on weka it differs between directories).
+PIXEL_FEATURE_NAMES = {
+    'hqpr': ['intensity', 'lbp', 'edge_strength', 'energy', 'relevance', 'entropy', 'uniformity', 'homogenity'],
+    'hqtr': ['transcript_density', 'lbp', 'edge_strength', 'energy', 'relevance', 'entropy', 'uniformity', 'homogenity'],
+}
 
-def pixel_feature_files(spoqc_tmp_folder, suffix):
-    # Every metric file of this modality is a k-means feature, in os.listdir order. That order
-    # decides the feature column order and so the labels; the filesystem, not the code, sets it.
-    return [f'{spoqc_tmp_folder}/{file}' for file in os.listdir(spoqc_tmp_folder)
-            if file.endswith(f'{suffix}.parquet')]
+
+def pixel_feature_files(spoqc_tmp_folder, modality, suffix):
+    """The metric files of PIXEL_FEATURE_NAMES[modality]; raises if one is missing or a stray one is present."""
+    expected = [f'{name}_output_{suffix}.parquet' for name in PIXEL_FEATURE_NAMES[modality]]
+    present = {file for file in os.listdir(spoqc_tmp_folder) if file.endswith(f'{suffix}.parquet')}
+    missing = [file for file in expected if file not in present]
+    unexpected = sorted(present - set(expected))
+    if missing or unexpected:
+        raise ValueError(f"[ERROR] Pixel metrics in {spoqc_tmp_folder}: missing {missing}, unexpected {unexpected}")
+    return [f'{spoqc_tmp_folder}/{file}' for file in expected]
 
 
 def cluster_pixels(features, n_clusters, seed, chunk_size, threads, sample_size=5_000_000):
@@ -111,17 +123,11 @@ def start_pixel_qc(
         spoqc_tmp_folder_metrices = f'{spoqc_tmp_folder}/metrices/{modality}'
         figure_path = f'{figure_path}/{modality}/{modality}_clustering/'
 
-    # Sanitycheck if files exists
-    for metric in metrics.image.pixel_score.STRUCTURE_METRICS + metrics.image.pixel_score.ANTI_STRUCTURE_METRICS:
-        metric_file = f"{spoqc_tmp_folder_metrices}/{metric}_output_{tmp_suffix}.parquet"
-        if ( not os.path.exists(metric_file) ):
-            sys.exit(f"[ERROR] File {metric_file} is missing")
-
     with dask.config.set(scheduler="threads", num_workers=threads):
         print('[NOTE] Agglomerate pixel metrices and cluster')
         timer.start()
-        feature_files = pixel_feature_files(spoqc_tmp_folder_metrices, tmp_suffix)
-        feature_names = [os.path.basename(f)[:-len(f'_output_{tmp_suffix}.parquet')] for f in feature_files]
+        feature_files = pixel_feature_files(spoqc_tmp_folder_metrices, modality, tmp_suffix)
+        feature_names = PIXEL_FEATURE_NAMES[modality]
         features = helperfuncs.read_pixel_features(feature_files, threads)
         print(f"[NOTE] Pixel features {feature_names}")
         timer.stop()
@@ -165,7 +171,7 @@ def start_pixel_qc(
             dim_y,
             imagedim,
             plot_all_pixel_clusters,
-            chunk_size,
+            N_CLUSTERS,
         )
 
         ####################
@@ -227,7 +233,9 @@ def start_pixel_qc(
             prior_columns, prior_divisions = priors.combine_priors.combine_priors_hqtr(
                 spoqc_tmp_folder, norm_p_pixel_score, pixel_score_mask, belief_name, f"{modality}_mask")
         columns = columns | prior_columns
-        divisions = sorted(set(metrics.image.pixel_score.row_divisions(len(clusters), chunk_size)) | set(prior_divisions))
+        divisions = metrics.image.pixel_score.row_divisions(len(clusters), chunk_size)
+        if ( prior_divisions ):
+            divisions = sorted(set(divisions) | set(prior_divisions))
         beliefs = columns[belief_name]
         timer.stop()
 

@@ -17,8 +17,10 @@ import pytest
 import xarray as xr
 from dask_ml.preprocessing import MinMaxScaler
 
+import numba
 import reference_pixel_scoring_db00d98 as reference
 from spoqc import helperfuncs
+from spoqc.core import groupreduce
 from spoqc.image_analysis import pixel_scoring_dask
 from spoqc.metrics.image import pixel_score, utility
 
@@ -94,16 +96,28 @@ class TestBackgroundIntensity:
         assert all(bits_equal(a, b) for a, b in zip(utility.estimate_background_intensity(image),
                                                     utility.estimate_background_intensity(np.flipud(image))))
 
-    def test_rejects_non_uint16(self):
-        with pytest.raises(TypeError):
-            utility.estimate_background_intensity(np.zeros((4, 4), np.float32))
+    @pytest.mark.parametrize("dtype", [np.uint8, np.int32, np.float32, np.float64])
+    def test_other_dtypes_match_dask_histogram(self, dtype):
+        rng = np.random.default_rng(9)
+        image = (rng.gamma(2.0, 40.0, (123, 77))).astype(dtype)
+        if np.issubdtype(dtype, np.floating):
+            image[3, 4] = np.nan
+        expected = reference.estimate_background_intensity_dask(fake_sdata(image), "morphology_focus", "scale0", "0")
+        got = utility.estimate_background_intensity(image)
+        for e, g in zip(expected, got):
+            assert bits_equal(e, g), dtype
+
+    def test_all_nan_raises_like_dask(self):
+        image = np.full((5, 5), np.nan, np.float32)
+        with pytest.raises(ValueError):
+            utility.estimate_background_intensity(image)
 
 
 class TestPixelFeatures:
     @pytest.fixture
     def metric_files(self, tmp_path):
         arrays = write_metrics(str(tmp_path), "hqpr_0", 50_003, np.random.default_rng(3))
-        return pixel_scoring_dask.pixel_feature_files(str(tmp_path), "hqpr_0"), arrays
+        return pixel_scoring_dask.pixel_feature_files(str(tmp_path), "hqpr", "hqpr_0"), arrays
 
     def expected(self, files):
         return reference.read_data_as_ddf(files, 10_000).compute()
@@ -125,18 +139,48 @@ class TestPixelFeatures:
         assert bits_equal(np.ascontiguousarray(got), self.expected(files))
         assert helperfuncs.PIXEL_FEATURES == {}
 
-    def test_feature_order_is_listdir_order(self, tmp_path):
-        write_metrics(str(tmp_path), "hqtr", 10, np.random.default_rng(4))
-        (tmp_path / "unrelated_output_hqpr_0.parquet").touch()
-        expected = [f"{tmp_path}/{f}" for f in os.listdir(tmp_path) if f.endswith("hqtr.parquet")]
-        assert pixel_scoring_dask.pixel_feature_files(str(tmp_path), "hqtr") == expected
+    @pytest.mark.parametrize("modality,suffix", [("hqpr", "hqpr_0"), ("hqtr", "hqtr")])
+    def test_feature_order_is_fixed_whatever_the_write_order(self, tmp_path, modality, suffix):
+        names = pixel_scoring_dask.PIXEL_FEATURE_NAMES[modality]
+        for name in names[::-1]:
+            (tmp_path / f"{name}_output_{suffix}.parquet").touch()
+        (tmp_path / "unrelated_output_other.parquet").touch()
+        assert pixel_scoring_dask.pixel_feature_files(str(tmp_path), modality, suffix) == [
+            f"{tmp_path}/{name}_output_{suffix}.parquet" for name in names]
+
+    def test_missing_feature_raises(self, tmp_path):
+        for name in pixel_scoring_dask.PIXEL_FEATURE_NAMES["hqpr"][1:]:
+            (tmp_path / f"{name}_output_hqpr_0.parquet").touch()
+        with pytest.raises(ValueError, match="missing"):
+            pixel_scoring_dask.pixel_feature_files(str(tmp_path), "hqpr", "hqpr_0")
+
+    def test_stray_feature_file_raises(self, tmp_path):
+        for name in pixel_scoring_dask.PIXEL_FEATURE_NAMES["hqpr"] + ["cluster"]:
+            (tmp_path / f"{name}_output_hqpr_0.parquet").touch()
+        with pytest.raises(ValueError, match="cluster_output_hqpr_0"):
+            pixel_scoring_dask.pixel_feature_files(str(tmp_path), "hqpr", "hqpr_0")
+
+    def test_shorter_parquet_raises(self, metric_files):
+        files, _ = metric_files
+        short = files[3]
+        table = pq.read_table(short)
+        pq.write_table(table.slice(0, table.num_rows - 1), short)
+        with pytest.raises(ValueError, match="pixels"):
+            helperfuncs.read_pixel_features(files, 2)
+
+    def test_shorter_in_memory_column_raises(self, metric_files, monkeypatch):
+        files, arrays = metric_files
+        name = os.path.basename(files[5]).split("_output_")[0]
+        monkeypatch.setattr(helperfuncs, "PIXEL_FEATURES", {os.path.abspath(files[5]): arrays[name][:-1].astype(np.float32)})
+        with pytest.raises(ValueError, match="pixels"):
+            helperfuncs.read_pixel_features(files, 2)
 
 
 class TestScores:
     @pytest.mark.parametrize("chunk_size", [1_000, 4_096, 60_000])
     def test_summed_scores_match_dask_summify(self, tmp_path, chunk_size):
         write_metrics(str(tmp_path), "hqpr_0", 20_011, np.random.default_rng(5))
-        files = pixel_scoring_dask.pixel_feature_files(str(tmp_path), "hqpr_0")
+        files = pixel_scoring_dask.pixel_feature_files(str(tmp_path), "hqpr", "hqpr_0")
         names = [os.path.basename(f).split("_output_")[0] for f in files]
         features = helperfuncs.read_pixel_features(files, 3)
         for metrics in (pixel_score.STRUCTURE_METRICS, pixel_score.ANTI_STRUCTURE_METRICS):
@@ -186,11 +230,13 @@ def prepare(tmp_path, modality, shape, rng):
     return roots, arrays, suffix, metrics_rel
 
 
+@pytest.mark.parametrize("shape", [(151, 203), (1, 14_001)], ids=["151x203", "one_row_partition"])
 @pytest.mark.parametrize("modality", ["hqpr", "hqtr"])
 @pytest.mark.parametrize("handoff", ["parquet", "in_memory"])
-def test_start_pixel_qc_is_bit_identical_to_reference(tmp_path, modality, handoff, monkeypatch):
+def test_start_pixel_qc_is_bit_identical_to_reference(tmp_path, modality, handoff, shape, monkeypatch):
+    # 14_001 pixels = 2 chunks of 7_000 plus a one-row partition (a repeated last division).
     rng = np.random.default_rng(7)
-    image = make_image((151, 203), rng)
+    image = make_image(shape, rng)
     roots, arrays, suffix, metrics_rel = prepare(tmp_path, modality, image.shape, rng)
     prefix = "hqpr_0" if modality == "hqpr" else "hqtr"
 
@@ -239,3 +285,32 @@ def test_pixel_frame_partitions_match_origin_dev_frame(chunk_size):
         assert got.index.equals(expected.index), i
         for column in expected.columns:
             assert bits_equal(got[column].to_numpy(), expected[column].to_numpy()), (i, column)
+
+
+class TestGroupSum:
+    @pytest.fixture
+    def data(self):
+        rng = np.random.default_rng(10)
+        n = 3 * groupreduce.GROUP_SUM_CHUNK + 12_345
+        groups = rng.integers(0, 100, n).astype(np.int32)
+        groups[groups == 42] = 41  # an empty group
+        values = (rng.gamma(2.0, 50.0, n) * rng.choice([1e-3, 1.0, 1e3], n)).astype(np.float32)
+        return groups, values
+
+    @pytest.mark.parametrize("numba_threads", [1, 2, 4], indirect=True)
+    def test_same_bits_for_any_thread_count(self, data, numba_threads):
+        groups, values = data
+        sums, counts = groupreduce.group_sum(groups, values, 100)
+        reference_sums = np.zeros(100)
+        for c in range(0, len(groups), groupreduce.GROUP_SUM_CHUNK):  # fixed order: rows in a chunk, then chunks
+            part = np.zeros(100)
+            for g, v in zip(groups[c:c + groupreduce.GROUP_SUM_CHUNK].tolist(), values[c:c + groupreduce.GROUP_SUM_CHUNK].astype(np.float64).tolist()):
+                part[g] += v
+            reference_sums += part
+        assert bits_equal(sums, reference_sums)
+        assert bits_equal(counts, np.bincount(groups, minlength=100).astype(np.int64))
+
+    def test_repeatable(self, data):
+        groups, values = data
+        runs = [groupreduce.group_sum(groups, values, 100)[0] for _ in range(3)]
+        assert all(bits_equal(runs[0], r) for r in runs[1:])

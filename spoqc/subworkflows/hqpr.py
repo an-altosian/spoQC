@@ -1,4 +1,7 @@
+from .. import helperfuncs
 from .. import image_analysis
+
+CLUSTERING_STEPS = ['all', 'unittest', 'hqpr', 'hqpr_clustering']
 
 def get_hqpr(
         sdata,
@@ -34,10 +37,14 @@ def get_hqpr(
             staining=CONST.STAINING,
         )
 
+        if ( CONST.STEP not in CLUSTERING_STEPS ):
+            # No clustering in this process to take the in-memory metric columns.
+            helperfuncs.PIXEL_FEATURES.clear()
+
         print('[finish]')
 
 
-    if ( CONST.STEP in ['all', 'unittest', 'hqpr', 'hqpr_clustering'] ):
+    if ( CONST.STEP in CLUSTERING_STEPS ):
 
         beliefs = image_analysis.pixel_scoring_dask.start_pixel_qc(
             sdata,

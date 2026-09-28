@@ -145,6 +145,11 @@ def read_pixel_features(tmp_files, threads):
     column touches only that column's pages, and each handed-off column is freed once copied.
     """
     n_rows = pq.ParquetFile(tmp_files[0]).metadata.num_rows
+    for tmp_file in tmp_files:
+        column = PIXEL_FEATURES.get(os.path.abspath(tmp_file))
+        n_file = pq.ParquetFile(tmp_file).metadata.num_rows if column is None else len(column)
+        if n_file != n_rows:
+            raise ValueError(f"[ERROR] {tmp_file} has {n_file} pixels, {tmp_files[0]} has {n_rows}")
     features = np.empty((n_rows, len(tmp_files)), dtype=np.float32, order='F')
     row_blocks = [slice(start, start + FEATURE_COPY_ROWS) for start in range(0, n_rows, FEATURE_COPY_ROWS)]
     with concurrent.futures.ThreadPoolExecutor(threads) as pool:

@@ -59,7 +59,7 @@ def pixel_intensity_qc(figure_path, intensities, background_intensity, hist, bin
 UINT16_VALUES = 1 << 16
 
 
-@numba.njit(parallel=True, cache=True)
+@numba.njit(parallel=True)
 def _uint16_counts(image, n_threads):
     """Exact np.bincount(image.ravel(), minlength=65536) of a 2-D uint16 image, one partial count per thread."""
     n_rows, n_cols = image.shape
@@ -75,22 +75,29 @@ def _uint16_counts(image, n_threads):
 
 
 def estimate_background_intensity(image, nbins=100):
-    """Background intensity of a 2-D uint16 image: the centre of the most populated of `nbins`
-    equal bins over [min, max]. Returns (background, hist, bin_edges).
+    """Background intensity of a 2-D image: the centre of the most populated of `nbins`
+    equal bins over [nanmin, nanmax]. Returns (background, hist, bin_edges).
 
-    One pass over the pixels counts every uint16 value; the histogram is then binned from those
-    counts with the same np.histogram(bins=nbins, range=(min, max)) arithmetic that
-    da.histogram applied per chunk, so hist and bin_edges are exactly origin/dev's.
+    The bins use the np.histogram(bins=nbins, range=(min, max)) arithmetic that
+    da.histogram applied per chunk, so hist and bin_edges are exactly origin/dev's. A uint16
+    image (Xenium morphology) is counted per value in one parallel pass and binned from the
+    counts; any other dtype goes through np.histogram directly.
     """
-    if image.dtype != np.uint16:
-        raise TypeError(f"estimate_background_intensity needs a uint16 image, got {image.dtype}")
-    counts = _uint16_counts(image, numba.get_num_threads())
-    values = np.flatnonzero(counts)
-    vmin, vmax = values[0], values[-1]
+    if image.dtype == np.uint16:
+        counts = _uint16_counts(image, numba.get_num_threads())
+        values = np.flatnonzero(counts)
+        vmin, vmax = values[0], values[-1]
+    else:
+        vmin, vmax = np.nanmin(image), np.nanmax(image)
+        if not np.isfinite(vmin) or not np.isfinite(vmax):
+            raise ValueError("Non-finite min/max encountered.")
     if vmin == vmax:
         vmax = vmin + 1.0
     range_ = (float(vmin), float(vmax))
-    hist = np.histogram(values.astype(np.uint16), bins=nbins, range=range_, weights=counts[values])[0]
+    if image.dtype == np.uint16:
+        hist = np.histogram(values.astype(np.uint16), bins=nbins, range=range_, weights=counts[values])[0]
+    else:
+        hist = np.histogram(image, bins=nbins, range=range_)[0]
     bin_edges = np.linspace(range_[0], range_[1], num=nbins + 1)
 
     max_bin_idx = int(np.argmax(hist))
