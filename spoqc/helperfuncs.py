@@ -29,7 +29,7 @@ from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 from scipy.ndimage import gaussian_filter
 from scipy.stats import norm
-from spoqc.core import figures
+from spoqc.core import figures, threads
 from spoqc.core.figures import save_figure
 
 class ImageDimStruct(NamedTuple):
@@ -1270,15 +1270,34 @@ def read_df_parquet_tmp_files_scorify(cluster_df, spoqc_tmp_folder, suffix):
         return None
 
 
+def histogram(array, nbins):
+    """np.histogram of the non-NaN values of `array` into nbins equal bins over their range (the
+    bins sns.histplot(array, bins=nbins) draws), counted on core.threads.N threads."""
+    array = np.asarray(array)
+    value_range = (np.nanmin(array), np.nanmax(array))
+    chunks = np.array_split(array, threads.N)
+    with concurrent.futures.ThreadPoolExecutor(threads.N) as executor:
+        counts = sum(executor.map(lambda chunk: np.histogram(chunk, bins=nbins, range=value_range)[0], chunks))
+    return counts, np.histogram_bin_edges(array[:0], bins=nbins, range=value_range)
+
+
 def plot_histogram_for_array(array, nbins, figure_path, title, suffix, t=None, std=None, nstds=1):
-    sns.histplot(array, bins=nbins)
+    if len(array):
+        # seaborn draws the counted bins, not every value (pixel arrays hold ~1e9 values)
+        counts, bin_edges = histogram(array, nbins)
+        sns.histplot(
+            {"value": bin_edges[:-1], "count": counts}, x="value", weights="count",
+            bins=nbins, binrange=(bin_edges[0], bin_edges[-1]),
+        )
+    else:
+        sns.histplot(array, bins=nbins)
+        bin_edges = np.histogram_bin_edges(array, bins=nbins)
     plt.title(title)
     plt.xlabel("value")
     plt.ylabel("frequency")
     if t:
         plt.axvline(x=t, color='red', linestyle='-', alpha=1.0)  # Adding vertical lines
     if t is not None and std is not None:
-        bin_edges = np.histogram_bin_edges(array, bins=nbins)
         bin_width = np.mean(np.diff(bin_edges))
         scale = len(array) * bin_width  # rescale pdf to match histplot's count-based y-axis
         x = np.linspace(np.min(array), np.max(array), 200)

@@ -4,9 +4,10 @@ import pandas as pd
 import concurrent.futures
 import scipy.sparse as sp
 
-from libpysal.weights import KNN
+from scipy.spatial import cKDTree
 
 from ... import helperfuncs
+from . import global_moran_I
 from ...core import groupreduce, spatial, transcripts
 
 # Cells within this distance of a cell form its Moran's I neighbourhood.
@@ -46,48 +47,28 @@ def fill_outside_from_nearest_inside(coords, feat, local_I, outside_mask, thread
     return local_I
 
 
-# Vectorized Moran-I for all genes in a neighborhood
-def moran_I_all_genes(X_dense: np.ndarray, w) -> np.ndarray:
-    """
-    X_dense: (n, num_genes) float array for selected cells
-    w: libpysal weights object
-    returns: (num_genes,) Moran's I per gene
-    """
-    n = X_dense.shape[0]
-    if n < 3:
-        return np.full((X_dense.shape[1],), -1.0, dtype=np.float32)
+# libpysal.cg.kdtree.KDTree's leaf size, which libpysal's KNN.from_array builds its tree with
+KNN_LEAFSIZE = 10
 
-    # ensure sparse CSR for W
-    # NOTE: w.sparse is typically CSR; w.transform='r' row-standardizes
-    w.transform = "r"
-    weights = w.sparse  # scipy sparse
 
-    # S0 for row-standardized weights is just sum(W)
-    row_standardized_weights = weights.sum()
-    if row_standardized_weights == 0:
-        return np.full((X_dense.shape[1],), -1.0, dtype=np.float32)
-
-    # center (do NOT standardize by std unless you want "z-scores"; Moran uses mean-centering)
-    z = X_dense - X_dense.mean(axis=0, keepdims=True)
-
-    # sparse matmul releases the GIL and is fast
-    z_weights = weights @ z
-
-    num = np.einsum("ij,ij->j", z, z_weights)         # sum over rows
-    den = np.einsum("ij,ij->j", z, z)
-
-    # protect against constant genes in the neighborhood
-    out = np.full((X_dense.shape[1],), -1.0, dtype=np.float32)
-    ok = den > 0
-    out[ok] = (n / row_standardized_weights) * (num[ok] / den[ok])
-    return out
-
-# Choose a fast weights builder for points
 def build_weights(coords_subset: np.ndarray, k):
-    # fixed K neighbors
-    # Take Minimum of k (30) cells if there are that many cells.
-    w = KNN.from_array(coords_subset, k=k)  # tune k
-    return w
+    """
+    libpysal's KNN.from_array(coords_subset, k=k) with w.transform = "r", as its w.sparse matrix:
+    each point's k nearest other points (ties broken by the same scipy KD-tree query), weight
+    1.0 / k, in canonical CSR (sorted column indices), built without libpysal's per-point dicts.
+    """
+    n = len(coords_subset)
+    _, indices = cKDTree(coords_subset, KNN_LEAFSIZE).query(coords_subset, k=k + 1, p=2)
+    # libpysal's self-drop: mask the point itself; a point with k + 1 other points at distance 0
+    # (itself not among them) drops its (k + 1)-th instead.
+    not_self_mask = indices != np.arange(n).reshape(-1, 1)
+    has_one_too_many = not_self_mask.sum(axis=1) == (k + 1)
+    not_self_mask[has_one_too_many, -1] &= False
+    neighbours = indices[not_self_mask].reshape(n, -1)
+    row_sum = sum([1.0] * k) * 1.0
+    data = np.full(neighbours.size, 1.0 / row_sum)
+    rows = np.repeat(np.arange(n), neighbours.shape[1])
+    return sp.csr_matrix((data, (rows, neighbours.ravel())), shape=(n, n))
 
 # Core computation per i (no sdata['table'] slicing, no GeoPandas)
 # This calculate all Moran'Is for all genes for one cell.
@@ -105,8 +86,8 @@ def compute_one_i(i: int, num_genes, distance_matrix, center_cell_ids, coords_al
     # If rna_X is sparse: this makes a dense (m, num_genes) only for the neighborhood (cheap-ish).
     X_sub = rna_X[idx, :].toarray() if sp.issparse(rna_X) else np.asarray(rna_X[idx, :])
 
-    w = build_weights(coords, k)
-    I_all = moran_I_all_genes(X_sub, w)
+    # m > k = 30 cells, and each row of the weights sums to 1: the neighbourhood is never degenerate.
+    I_all = global_moran_I.moran_I_all_genes(X_sub, build_weights(coords, k), fill=-1.0, dtype=np.float32)
     return center_cell_id, I_all
 
 

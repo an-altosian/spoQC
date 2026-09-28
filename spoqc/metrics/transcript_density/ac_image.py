@@ -1,15 +1,14 @@
 import spatialdata as sd
 import numpy as np
 import pandas as pd
-import dask.array as da
-import dask.dataframe as dd
 
 from scipy.ndimage import convolve
 
 from ... import helperfuncs
 from ... import priors
 from . import local_moran_I
-from ...core import transcripts
+from . import transcript_density_image
+from ...core import groupreduce, parquet, transcripts
 
 # We are calculating a kernel density at the end so you will not have your usual [-1,1] autocorraltion values.
 def generate_transcript_ambient_density_image(
@@ -31,10 +30,7 @@ def generate_transcript_ambient_density_image(
     dim_x = len(sdata[image_type][resolution].image.y.values)
     dim_y = len(sdata[image_type][resolution].image.x.values)
 
-    transcript_coords_df = transcripts.global_coordinates(sdata).to_pandas()
-    transcript_coords_df = transcript_coords_df.astype(int)
-    xy_transcript_coords_df = transcript_coords_df.loc[:,['x','y']]
-    xy_transcript_coords_df['morans_I'] = np.zeros(len(xy_transcript_coords_df))
+    pixels, rows, offsets, n_pixels = transcript_density_image.transcript_pixel_groups(sdata, imagedim)
 
     # Attach ambient score to transcript df.
     features = transcripts.load_transcripts(sdata, ['feature_name'])['feature_name']
@@ -45,32 +41,16 @@ def generate_transcript_ambient_density_image(
     # Later rows win for a repeated gene; genes absent from the transcripts assign nothing.
     morans_I_of_gene = dict(zip(global_ambient['genes'], global_ambient['morans_I']))
     morans_I_by_code = transcripts.lookup_by_code(features, morans_I_of_gene, 0.0, np.float64)
-    xy_transcript_coords_df['morans_I'] = morans_I_by_code[features.to_physical().to_numpy()]
+    morans_I = morans_I_by_code[features.to_physical().to_numpy()]
 
     # Now we will add the local morans I
-    xy_transcript_coords_df['local_moran_I'] = local_moran_I.calculate_local_moran_I_values(sdata, threads)
+    local_morans_I = local_moran_I.calculate_local_moran_I_values(sdata, threads)
 
     # First calculate the ambient potential (global Moran's I) ----------------------------------
     print("[NOTE] Calcualte pixel max")
     timer.start()
-    gm = (
-        xy_transcript_coords_df
-        .groupby(["x", "y"])["morans_I"]
-        .max()
-        .rename("morans_I")
-    )
-
-    x_idx = range(int(imagedim.bb_xmin), int(imagedim.bb_xmax))
-    y_idx = range(int(imagedim.bb_ymin), int(imagedim.bb_ymax))
-    # pd.MultiIndex.from_product builds the identical index in C; from_tuples
-    # materialised one Python tuple per pixel first. Verified with
-    # mi_old.equals(mi_new) -> True, so every downstream value is unchanged.
-    grid_mi = pd.MultiIndex.from_product([y_idx, x_idx], names=["y", "x"]).swaplevel(0, 1)
-
     transcript_density_list = (
-        gm.reindex(grid_mi)     # align to the full grid
-        .fillna(0.0)
-        .to_numpy()
+        groupreduce.to_grid(pixels, groupreduce.group_max(morans_I, rows, offsets), n_pixels, 0.0)
         .astype("float64")
     )
     timer.stop()
@@ -105,17 +85,8 @@ def generate_transcript_ambient_density_image(
     # Second calculate the ambient value (local Moran's I) ----------------------------------
     print("[NOTE] Calcualte pixel max")
     timer.start()
-    gm = (
-        xy_transcript_coords_df
-        .groupby(["x", "y"])["local_moran_I"]
-        .max()
-        .rename("local_moran_I")
-    )
-
     local_transcript_density_list = (
-        gm.reindex(grid_mi)     # align to the full grid
-        .fillna(0.0)
-        .to_numpy()
+        groupreduce.to_grid(pixels, groupreduce.group_max(local_morans_I, rows, offsets), n_pixels, 0.0)
         .astype("float64")
     )
     timer.stop()
@@ -187,13 +158,12 @@ def transcript_ac_image(
     timer.start()
     np_arr = generate_transcript_ambient_density_image(sdata, figure_path, threads, imagedim, global_ambient, image_type, 
                                                        resolution)
-    image_ddf = dd.from_dask_array(da.from_array(np_arr, chunks=chunk_size), columns=["ac_density"])
     timer.stop()
 
     print("[NOTE] Generate ac histogram")
     timer.start()
     helperfuncs.plot_histogram_for_array(
-        image_ddf[image_ddf['ac_density'] > 0]['ac_density'].compute().to_numpy(),
+        np_arr[np_arr > 0],
         100,
         figure_path,
         "Transcript autocorrelation density historgram",
@@ -205,12 +175,14 @@ def transcript_ac_image(
     # These genes might be ambient, i.e., there is a spillover of those genese counts across the whole slide.
     print("[NOTE] Calculate ac probabilities")
     timer.start()
-    image_ddf = priors.hqtr.ac_or_qv.calc_prob_pixel_stuff_v2(image_ddf, figure_path, 0.4, 1, 'left', 'ac_density')
+    norm_p, part_columns = priors.hqtr.ac_or_qv.calc_prob_pixel_stuff_v2(
+        np_arr, figure_path, 0.4, 1, 'left', 'ac_density', threads
+    )
     timer.stop()
 
     helperfuncs.plot_pixels(
         figure_path,
-        image_ddf['norm_p_ac_density'].compute().to_numpy().reshape(dim_x, dim_y),
+        norm_p.reshape(dim_x, dim_y),
         imagedim,
         'norm_p_ac_density', 
         'Normalized probability of AC Density Pixel', 
@@ -218,4 +190,4 @@ def transcript_ac_image(
         False,
         False
     )
-    helperfuncs.ddf_to_parquet(image_ddf, modality, spoqc_tmp_folder, [], 'ac_prob')
+    parquet.write_parts(f"{spoqc_tmp_folder}/{modality}_output_ac_prob", len(np_arr), part_columns, chunk_size, threads)

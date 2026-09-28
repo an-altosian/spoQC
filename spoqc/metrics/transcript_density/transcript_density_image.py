@@ -1,11 +1,29 @@
 import spatialdata as sd
 import numpy as np
-import pandas as pd
 
 from scipy.ndimage import convolve
 
 from ... import helperfuncs
-from ...core import transcripts
+from ...core import groupreduce, transcripts
+
+
+def transcript_pixel_groups(sdata, imagedim):
+    """
+    The transcripts grouped by the pixel of imagedim's grid their truncated global (x, y) falls on
+    (groupreduce.pixel_groups), plus the grid's pixel count.
+
+    Returns (pixels, rows, offsets, n_pixels); pixel order is that of
+    MultiIndex.from_product([range(bb_ymin, bb_ymax), range(bb_xmin, bb_xmax)]).
+    """
+    transcript_coords_df = transcripts.global_coordinates(sdata).to_pandas()
+    transcript_coords_df = transcript_coords_df.astype(int)
+    x_range = (int(imagedim.bb_xmin), int(imagedim.bb_xmax))
+    y_range = (int(imagedim.bb_ymin), int(imagedim.bb_ymax))
+    n_pixels = max(x_range[1] - x_range[0], 0) * max(y_range[1] - y_range[0], 0)
+    pixels, rows, offsets = groupreduce.pixel_groups(
+        transcript_coords_df['x'].to_numpy(), transcript_coords_df['y'].to_numpy(), x_range, y_range
+    )
+    return pixels, rows, offsets, n_pixels
 
 def generate_transcript_density_image(
         sdata,
@@ -24,28 +42,10 @@ def generate_transcript_density_image(
     dim_x = len(sdata[image_type][resolution].image.y.values)
     dim_y = len(sdata[image_type][resolution].image.x.values)
 
-    transcript_coords_df = transcripts.global_coordinates(sdata).to_pandas()
-    transcript_coords_df = transcript_coords_df.astype(int)
-    xy_transcript_coords_df = transcript_coords_df.loc[:,['x','y']]
-
-    # These list I need later because the image matrix has not the same index range as the centroid coords.
-    x_idx = [i for i in range(int(imagedim.bb_xmin), int(imagedim.bb_xmax))]
-    y_idx = [i for i in range(int(imagedim.bb_ymin), int(imagedim.bb_ymax))]
-
     print("[NOTE] Translate cooridnates")
     timer.start()
-    counts = (
-        xy_transcript_coords_df
-        .value_counts(subset=['x','y'])      # returns a Series indexed by MultiIndex (x,y)
-        .rename('count')
-    )
-    # pd.MultiIndex.from_product builds the identical index in C; from_tuples
-    # materialised one Python tuple per pixel first. Verified with
-    # mi_old.equals(mi_new) -> True, so every downstream value is unchanged.
-    grid_mi = pd.MultiIndex.from_product([y_idx, x_idx], names=['y', 'x']).swaplevel(0, 1)
-    idxer = counts.index.get_indexer(grid_mi)  # -1 where (x,y) is missing
-    vals = counts.to_numpy()
-    transcript_density_list = np.where(idxer >= 0, vals[idxer], 0) # fill 0 where it is missing
+    pixels, _, offsets, n_pixels = transcript_pixel_groups(sdata, imagedim)
+    transcript_density_list = groupreduce.to_grid(pixels, np.diff(offsets), n_pixels, 0)
     timer.stop()
 
     xy_transcript_density = np.array(transcript_density_list).reshape(dim_x, dim_y)

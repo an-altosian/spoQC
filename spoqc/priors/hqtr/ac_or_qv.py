@@ -1,11 +1,25 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
-import pandas as pd
 
 from ... import helperfuncs
 
-from dask_ml.preprocessing import MinMaxScaler
+ROWS_PER_TASK = (
+    1 << 22
+)  # elementwise work runs on slices of this many pixels, one per thread task
 
-def calc_prob_pixel_stuff_v2(image_ddf, figure_path, thresh, std, tail, col):
+
+def calc_prob_pixel_stuff_v2(values, figure_path, thresh, std, tail, col, threads):
+    """
+    The prior of every pixel value in `values` (a 1-D float64 array): a Gaussian density at
+    `thresh`, set to its peak on the `tail` side, subtracted from the peak (d_{col}), then
+    min-max scaled to [0, 1] as dask_ml's MinMaxScaler scales a column (norm_p_{col}).
+
+    Returns (norm_p, part_columns): the norm_p_{col} array, and part_columns(start, stop), the
+    columns {col, d_{col}, norm_p_{col}} of pixels start..stop-1 for core.parquet.write_parts.
+    Elementwise work runs on slices on `threads` threads; every value is computed exactly as
+    it is for the whole array.
+    """
 
     if std <= 0:
         raise ValueError("std must be > 0")
@@ -13,15 +27,14 @@ def calc_prob_pixel_stuff_v2(image_ddf, figure_path, thresh, std, tail, col):
     inv_std = 1.0 / std
     norm_const = inv_std / np.sqrt(2.0 * np.pi)
 
-    def _part(part: pd.DataFrame) -> pd.Series:
-        x = part[col].to_numpy()
+    def _part(x):
         # Gaussian PDF centered at `thresh`
         z = (x - thresh) * inv_std
         pdf = norm_const * np.exp(-0.5 * z * z)
 
         # Tail overwrite to norm_const (then we'll invert below).
         # You have to use norm_const because it is ultimately where the peak height of the Guassian is.
-        # Do not use np.max(pdf) here because we deal with Dask partitions and each partition has its own distribution.
+        # Do not use np.max(pdf) here because each slice has its own distribution.
         # Thus the constant here is given by the Gaussian shape.
         if tail == "left":
             pdf = np.where(x < thresh, norm_const, pdf)
@@ -32,25 +45,38 @@ def calc_prob_pixel_stuff_v2(image_ddf, figure_path, thresh, std, tail, col):
         # Because the tailing sets values to norm_const we have substract norm_const
         # to create 0 which is the extreme case of the worst probability.
         # Keep in mind that you deal with pdfs here not probabilities.
-        out = norm_const - pdf
+        return norm_const - pdf
 
-        # We have no densities which we still have to turn into probabilities!
-        return pd.Series(out, index=part.index, name=f"d_{col}")
+    def bounds(s):
+        d = _part(values[s])
+        return np.nanmin(d), np.nanmax(d)
 
-    p_series = image_ddf.map_partitions(_part, meta=(f"d_{col}", "f8"))
-    image_ddf = image_ddf.assign(**{f"d_{col}": p_series})
+    slices = [
+        slice(start, start + ROWS_PER_TASK)
+        for start in range(0, len(values), ROWS_PER_TASK)
+    ]
+    norm_p = np.empty(len(values), dtype=np.float64)
+    with ThreadPoolExecutor(threads) as executor:
+        # Min-Max normalize as dask_ml's MinMaxScaler (feature_range (0, 1)): min and max skip NaN,
+        # a zero range scales by 1, and x * scale + min_.
+        slice_bounds = list(executor.map(bounds, slices))
+        data_min = np.nanmin([b[0] for b in slice_bounds])
+        data_max = np.nanmax([b[1] for b in slice_bounds])
+        data_range = data_max - data_min
+        scale = (1 - 0) / (data_range if data_range != 0 else np.float64(1))
+        min_ = 0 - data_min * scale
 
-    # Min-Max normalize using dask-ml
-    scaler = MinMaxScaler()
-    scaled_df = scaler.fit_transform(image_ddf[[f'd_{col}']])
-    scaled_series = scaled_df.iloc[:, 0]
+        def scale_slice(s):
+            norm_p[s] = _part(values[s]) * scale + min_
 
-    image_ddf = image_ddf.assign(
-        **{f'norm_p_{col}': scaled_series}
-    )
+        list(executor.map(scale_slice, slices))
+
+    def part_columns(start, stop):
+        x = values[start:stop]
+        return {col: x, f"d_{col}": _part(x), f"norm_p_{col}": norm_p[start:stop]}
 
     helperfuncs.plot_histogram_for_array(
-        image_ddf[col].compute().to_numpy(),
+        values,
         100,
         figure_path,
         f"{col}: t={np.round(thresh, 3)} with {1} x {np.round(std, 3)} std",
@@ -60,4 +86,4 @@ def calc_prob_pixel_stuff_v2(image_ddf, figure_path, thresh, std, tail, col):
         nstds=1,
     )
 
-    return image_ddf
+    return norm_p, part_columns
