@@ -12,10 +12,11 @@ PROBE = r"""
 import json, sys, types
 
 def probe(args):
-    heavy = sorted(m for m in ("numpy", "numba", "polars", "dask", "ovrlpy") if m in sys.modules)
+    # configure itself imports cv2 and numcodecs (and so numpy) after setting the variables
+    heavy = sorted(m for m in ("numba", "polars", "dask", "ovrlpy", "pyarrow", "zarr") if m in sys.modules)
     del sys.modules["spoqc.cli"]
     import spoqc.cli
-    import dask, matplotlib, numba, polars
+    import cv2, dask, matplotlib, numba, numcodecs.blosc, polars, pyarrow, zarr
     from threadpoolctl import threadpool_info
     from spoqc.core import threads
     print(json.dumps({
@@ -28,6 +29,11 @@ def probe(args):
         "dask": dask.config.get("num_workers"),
         "blas": sorted({pool["num_threads"] for pool in threadpool_info()}),
         "backend": matplotlib.get_backend().lower(),
+        "cv2": cv2.getNumThreads(),
+        "blosc": numcodecs.blosc.get_nthreads(),
+        "arrow_cpu": pyarrow.cpu_count(),
+        "arrow_io": pyarrow.io_thread_count(),
+        "zarr": zarr.config.get("threading.max_workers"),
     }))
 
 fake = types.ModuleType("spoqc.cli")
@@ -59,6 +65,10 @@ def test_entry_point_sets_every_pool_to_n():
     assert report["dask"] == 3
     assert report["blas"] == [3]
     assert report["backend"] == "agg"
+    assert report["cv2"] == 3
+    assert report["blosc"] == 3
+    assert report["arrow_cpu"] == 3 and report["arrow_io"] == 3
+    assert report["zarr"] == 3
 
 
 def test_dev_test_budget_is_eight():
