@@ -19,6 +19,7 @@ figures too, so the figure pools use every core of the budget.
 
 import collections
 import io
+import logging
 import multiprocessing
 import os
 import pickle
@@ -34,7 +35,7 @@ from matplotlib.figure import Figure
 from matplotlib.image import AxesImage
 from numba import njit, prange
 
-from spoqc.core import threads
+from spoqc.core import figure_worker
 
 # Threads of the run's budget per figure worker (see the CPU budget note above).
 THREADS_PER_FIGURE_WORKER = 4
@@ -72,6 +73,7 @@ _in_flight = {}  # future -> (pool, pickled bytes)
 _errors = []  # worker exceptions, re-raised on the main thread
 _draining = False
 _state = threading.Condition(threading.RLock())
+_log = logging.getLogger(__name__)
 
 
 def _element_count(collection):
@@ -102,7 +104,7 @@ def _block_mean(a, k):
     return np.ma.masked_array(mean.astype(a.dtype), mask=count == 0)
 
 
-@njit(parallel=True, cache=True)
+@njit(parallel=True)
 def _colour_blocks(data, mask, has_mask, vmin, vmax, clip, lut, n_colours, k):
     """Colour each sample like Normalize + Colormap.__call__, then average k x k blocks of
     premultiplied colours (the last block per axis may be smaller); returns uint8 RGBA."""
@@ -152,7 +154,10 @@ def _colour_average(image, k):
     lut = np.vstack([cmap(np.arange(cmap.N)), [cmap.get_under(), cmap.get_over(), cmap.get_bad()]])
     has_mask = np.ma.getmask(a) is not np.ma.nomask
     mask = np.ma.getmaskarray(a) if has_mask else np.zeros((1, 1), bool)
-    return _colour_blocks(np.ma.getdata(a), mask, has_mask, float(norm.vmin), float(norm.vmax),
+    data = np.ma.getdata(a)
+    if data.dtype not in (np.float32, np.float64):  # numba has no float16 / longdouble
+        data = data.astype(np.float64)
+    return _colour_blocks(data, mask, has_mask, float(norm.vmin), float(norm.vmax),
                           bool(norm.clip), lut, cmap.N, k)
 
 
@@ -168,9 +173,10 @@ def _reduced_images(fig, dpi):
     reduced = {}
     for image in fig.findobj(lambda artist: type(artist) is AxesImage):
         a = image.get_array()
-        if not np.issubdtype(a.dtype, np.floating) or image.get_interpolation() in (
-            "nearest",
-            "none",
+        if (
+            not np.issubdtype(a.dtype, np.floating)
+            or image.get_interpolation() in ("nearest", "none")
+            or image.get_interpolation_stage() == "data"  # colours of resampled values, not averages
         ):
             continue
         if a.ndim == 2 and type(image.norm) is not Normalize:
@@ -262,45 +268,70 @@ def _pending_bytes():
     return sum(n for _, n in _held) + sum(n for _, n in _in_flight.values())
 
 
+def _log_errors(errors, what):
+    for error in errors:
+        _log.error("figure write failed (%s)", what, exc_info=error)
+
+
 def _raise_worker_error():
+    """Raise the first worker error; log the others, which would otherwise be lost."""
     if _errors:
-        error = _errors[0]
+        first, rest = _errors[0], _errors[1:]
         _errors.clear()
-        raise error
+        _held.clear()  # the run fails: queued figures are not written
+        _log_errors(rest, "not re-raised: an earlier figure failed first")
+        raise first
 
 
 def _dispatch():
-    """Hand held figures to pools with an idle worker (the drain pool only while draining)."""
-    while _held:
+    """Hand held figures to pools with an idle worker (the drain pool only while draining).
+
+    Nothing is dispatched once a write has failed: the run is going to raise.
+    """
+    while _held and not _errors:
         pools = [_executor] + ([_drain] if _draining and _drain is not None else [])
         busy = collections.Counter(pool for pool, _ in _in_flight.values())
         pool = next((p for p in pools if busy[p] < _workers[p]), None)
         if pool is None:
             return
-        args, nbytes = _held.popleft()
-        future = pool.submit(_write, *args)
+        args, nbytes = _held[0]
+        try:
+            future = pool.submit(_write, *args)
+        except Exception as error:  # e.g. BrokenProcessPool: keep it, the figure stays held
+            _errors.append(error)
+            return
+        _held.popleft()
         _in_flight[future] = (pool, nbytes)
         future.add_done_callback(_finished)
 
 
 def _finished(future):
+    """Done-callback, on a pool's manager thread (or the caller's, if already done).
+
+    Only a successful write dispatches the next figure. A pool that breaks sets its futures'
+    exceptions while holding its own shutdown lock, which submit() takes too, so submitting
+    from here would deadlock; failed and cancelled futures only record and notify.
+    """
     with _state:
-        del _in_flight[future]
-        if not future.cancelled() and future.exception() is not None:
-            _errors.append(future.exception())
-        _dispatch()
-        _state.notify_all()
+        try:
+            del _in_flight[future]
+            if future.cancelled():
+                return
+            if future.exception() is not None:
+                _errors.append(future.exception())
+                return
+            _dispatch()
+        finally:
+            _state.notify_all()
 
 
 def _pool(workers):
-    # Each worker runs single-threaded: threads.configure(1) is the initializer. Unpickling it
-    # imports only spoqc.core.threads, so it runs before the worker imports numpy, polars or
-    # numba (the task function lives in this module, which is imported after it).
+    # figure_worker.init runs each worker single-threaded and ends it when this process dies.
     pool = ProcessPoolExecutor(
         max_workers=workers,
         mp_context=multiprocessing.get_context("spawn"),
-        initializer=threads.configure,
-        initargs=(1,),
+        initializer=figure_worker.init,
+        initargs=(os.getpid(),),
     )
     _workers[pool] = workers
     return pool
@@ -333,7 +364,7 @@ def wait():
         _draining = True
         try:
             _dispatch()
-            while _held or _in_flight:
+            while _in_flight or (_held and not _errors):
                 _state.wait()
         finally:
             _draining = False
@@ -358,8 +389,16 @@ def stop():
 
 
 def abort():
-    """On the error path: drop queued writes, let running ones finish, close the pools."""
+    """On the error path: drop queued writes, let running ones finish, close the pools.
+
+    Errors of those writes are logged, not kept for a later start().
+    """
     with _state:
         _held.clear()
+        dropped = list(_errors)
         _errors.clear()
     _close(cancel=True)
+    with _state:
+        dropped += _errors
+        _errors.clear()
+    _log_errors(dropped, "while aborting")

@@ -1,6 +1,11 @@
 import os
 import pickle
+import subprocess
+import sys
+import threading
 import time
+import types
+from concurrent.futures.process import BrokenProcessPool
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -12,7 +17,7 @@ from matplotlib.transforms import Affine2D
 from anndata import AnnData
 
 from spoqc import helperfuncs
-from spoqc.core import figures
+from spoqc.core import figure_worker, figures
 from spoqc.core.figures import save_figure
 
 WORKERS = 2
@@ -516,8 +521,8 @@ class TestColourAverage:
     def test_noisy_texture_looks_like_the_full_resolution_render(self, tmp_path):
         # LBP-like per-pixel noise at the full-scale hqtr density (18 samples per output pixel):
         # averaging values would draw it as one flat mid colour; averaging colours does not.
-        codes = np.random.default_rng(0).integers(0, 102, (3600, 3600)).astype(np.float64)
-        fig = plt.figure(figsize=(2, 2), dpi=100)
+        codes = np.random.default_rng(0).integers(0, 102, (1800, 1800)).astype(np.float64)
+        fig = plt.figure(figsize=(2, 2), dpi=50)
         ax = fig.add_axes((0, 0, 1, 1))
         ax.imshow(codes, cmap="hot")
         save_figure(fig, tmp_path / "reduced.png")
@@ -577,3 +582,138 @@ class TestDrain:
                 figures.wait()
         finally:
             figures.abort()
+
+
+class _DieInWorker:
+    """Kills the worker process that unpickles it."""
+
+    def __reduce__(self):
+        return os._exit, (1,)
+
+
+class _SleepInWorker:
+    def __init__(self, seconds):
+        self.seconds = seconds
+
+    def __reduce__(self):
+        return time.sleep, (self.seconds,)
+
+
+def _wait_with_timeout(timeout=60):
+    """figures.wait() on a thread; returns the exception it raised. A hang fails the test."""
+    result = {}
+
+    def run():
+        try:
+            figures.wait()
+            result["error"] = None
+        except BaseException as error:  # noqa: BLE001 - handed to the test
+            result["error"] = error
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    assert "error" in result, "figures.wait() hung"
+    return result["error"]
+
+
+class TestBrokenPools:
+    def test_a_dead_worker_raises_broken_process_pool_and_does_not_hang(self):
+        figures.start(8)
+        try:
+            save_figure(_DieInWorker())
+            for _ in range(20):
+                save_figure(_SleepInWorker(0.5))
+            assert isinstance(_wait_with_timeout(), BrokenProcessPool)
+        finally:
+            figures.abort()
+
+    def test_a_failing_worker_initializer_raises_broken_process_pool(self, monkeypatch):
+        monkeypatch.setattr(figures, "figure_worker", types.SimpleNamespace(init=sys.exit))
+        figures.start(4)
+        try:
+            save_figure(_SleepInWorker(0.1))
+            assert isinstance(_wait_with_timeout(), BrokenProcessPool)
+        finally:
+            figures.abort()
+
+    def test_a_figure_whose_submit_fails_stays_held_and_the_error_is_raised(self, pool, monkeypatch):
+        def broken_submit(*args):
+            raise BrokenProcessPool("pool broke")
+
+        monkeypatch.setattr(figures._executor, "submit", broken_submit)
+        save_figure(_SleepInWorker(0))
+        assert len(figures._held) == 1  # not lost
+        with pytest.raises(BrokenProcessPool, match="pool broke"):
+            figures.wait()
+        monkeypatch.undo()
+
+
+class TestErrorBookkeeping:
+    def test_secondary_errors_are_logged_not_dropped(self, caplog):
+        figures._errors.extend([ValueError("first"), ValueError("second")])
+        with caplog.at_level("ERROR", logger="spoqc.core.figures"), pytest.raises(ValueError, match="first"):
+            with figures._state:
+                figures._raise_worker_error()
+        assert any(r.exc_info and "second" in str(r.exc_info[1]) for r in caplog.records)
+        assert figures._errors == []
+
+    def test_abort_logs_a_late_error_and_leaves_none_for_the_next_start(self, tmp_path, caplog):
+        figures.start(2)
+        save_figure(_scatter(n=200_000), tmp_path / "missing_dir" / "late.png", dpi=150)  # fails after rendering
+        _until(lambda: figures._in_flight)
+        with caplog.at_level("ERROR", logger="spoqc.core.figures"):
+            figures.abort()
+        assert figures._errors == [] and not figures._held and not figures._in_flight
+        assert any(r.exc_info and isinstance(r.exc_info[1], FileNotFoundError) for r in caplog.records)
+        figures.start(2)
+        try:
+            save_figure(_scatter(), tmp_path / "next.png")
+        finally:
+            figures.stop()  # raises if the late error had leaked into this run
+        assert (tmp_path / "next.png").exists()
+
+
+class TestImageKinds:
+    def _fig(self, data, **kwargs):
+        fig = plt.figure(figsize=(2, 2), dpi=50)
+        fig.add_axes((0, 0, 1, 1)).imshow(data, **kwargs)
+        return fig
+
+    def test_float16_image_is_reduced(self):
+        data = np.log10(np.random.default_rng(0).integers(0, 255, (4000, 4000), dtype=np.uint8) + np.float16(1))
+        assert data.dtype == np.float16
+        reduced = figures._reduced_images(self._fig(data), 50)
+        assert [v.shape for v in reduced.values()] == [(200, 200, 4)]
+
+    def test_data_stage_interpolation_is_never_reduced(self):
+        fig = self._fig(np.zeros((4000, 4000), np.float32), interpolation_stage="data")
+        assert figures._reduced_images(fig, 50) == {}
+
+
+class TestOrphanedWorkers:
+    def test_workers_exit_when_the_parent_process_dies(self, tmp_path):
+        script = f"""
+import os, sys
+from spoqc.core import figures
+import matplotlib.pyplot as plt
+figures.start(2)
+fig, ax = plt.subplots(); ax.plot([0, 1])
+figures.save_figure(fig, {str(tmp_path / 'a.png')!r})
+figures.wait()
+pids = [p.pid for pool in (figures._executor, figures._drain) for p in pool._processes.values()]
+print(' '.join(map(str, pids)), flush=True)
+os._exit(0)  # die without shutting the pools down
+"""
+        out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=300, check=True)
+        pids = [int(p) for p in out.stdout.split()]
+        assert len(pids) == 2
+
+        def alive(pid):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            return True
+
+        _until(lambda: not any(alive(p) for p in pids), timeout=10 * figure_worker.PARENT_POLL_SECONDS + 10)
