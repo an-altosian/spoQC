@@ -27,8 +27,7 @@ def get_hqtr(
             imagedim,
             dim_x,
             dim_y,
-            CONST.OVERWRITE,
-            CONST.THREADS
+            CONST.OVERWRITE
         )
 
         print('[finish]')

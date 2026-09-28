@@ -18,7 +18,6 @@ def start_image_struc_analyis(
         dim_x,
         dim_y,
         overwrite,
-        threads,
         *,
         staining=None
 ):
@@ -140,7 +139,7 @@ def start_image_struc_analyis(
         # Mostly useful to identify if windows have specific patterns you want to cluster.
         print('[NOTE] Investigate local binary patterns')
         run(['lbp'], pixel_metrics.lbp, xy_intensities, [('lbp', 'Local Binary Pattern (LBP)', None)],
-            n_points=100, radius=3, threads=threads)
+            n_points=100, radius=3)
 
     #######################
     ###### Structure ######
@@ -155,7 +154,7 @@ def start_image_struc_analyis(
         # How much inforamtion has a pixel?
         print('[NOTE] Calculate pixel energy')
         run(['energy'], pixel_metrics.energy, xy_intensities, [('energy', 'Log10 Pixel Energy', None)],
-            window_size=5, threads=threads)
+            window_size=5)
 
     if ( 'relevance' in steps ):
         # Just check which pixel are have intensities bigger than background.

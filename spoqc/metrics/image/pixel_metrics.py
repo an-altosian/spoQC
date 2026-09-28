@@ -6,17 +6,12 @@ The window-histogram kernel (entropy, uniformity, homogeneity) is
 `image_analysis._slidingwindow.texture_metrics`.
 """
 
-import math
-from concurrent.futures import ThreadPoolExecutor
-
 import cv2
 import numpy as np
+from numba import njit, prange
 from scipy.ndimage import gaussian_filter
-from skimage.feature import local_binary_pattern
 
 from ... import helperfuncs
-
-ROW_CHUNKS_PER_THREAD = 4  # load balance for the row-chunked kernels
 
 
 def pixel_metric(kernel, image, figure_path, imagedim, plots, **kernel_args):
@@ -43,38 +38,66 @@ def pixel_metric(kernel, image, figure_path, imagedim, plots, **kernel_args):
     return flat
 
 
-def _row_chunked(func, image, halo, threads):
-    """float64 func(image) computed on row chunks in `threads` threads; exact when an output row
-    depends only on input rows within `halo` of it (image borders are kept as borders)."""
-    n = image.shape[0]
-    out = np.empty(image.shape, dtype=np.float64)
-    bounds = np.linspace(0, n, threads * ROW_CHUNKS_PER_THREAD + 1).astype(int)
-
-    def one(k):
-        a, b = bounds[k], bounds[k + 1]
-        lo, hi = max(a - halo, 0), min(b + halo, n)
-        out[a:b] = func(image[lo:hi])[a - lo : b - lo]
-
-    with ThreadPoolExecutor(threads) as executor:
-        list(executor.map(one, range(len(bounds) - 1)))
-    return out
-
-
 def signal_noise_ratio(xy_intensities, background_intensity):
     """Log2 signal-noise ratio: is the pixel noise or true positive?"""
     return (np.log2((xy_intensities + 1) / background_intensity),)
 
 
-def lbp(xy_intensities, n_points, radius, threads):
-    """Local binary pattern ("uniform"); skimage reads samples up to ceil(radius) rows away."""
-    return (
-        _row_chunked(
-            lambda rows: local_binary_pattern(rows, n_points, radius, method="uniform"),
-            xy_intensities,
-            math.ceil(radius) + 1,
-            threads,
-        ),
-    )
+@njit(parallel=True)
+def _lbp_uniform(image, rp, cp, output):
+    """skimage 0.26 _texture.pyx _local_binary_pattern, method 'U', rows in parallel.
+
+    Same arithmetic in the same order as skimage's bilinear_interpolation (interpolation.pxd,
+    mode 'C', cval 0) at GLOBAL (r + rp[i], c + cp[i]), so the tie test
+    texture[i] - image[r, c] >= 0 decides exactly as it does there.
+    """
+    rows, cols = image.shape
+    P = rp.shape[0]
+    for r in prange(rows):
+        signed_texture = np.empty(P, dtype=np.int8)
+        for c in range(cols):
+            center = image[r, c]
+            for i in range(P):
+                rr = r + rp[i]
+                cc = c + cp[i]
+                minr = np.int64(np.floor(rr))
+                minc = np.int64(np.floor(cc))
+                maxr = np.int64(np.ceil(rr))
+                maxc = np.int64(np.ceil(cc))
+                dr = rr - minr
+                dc = cc - minc
+                top_left = image[minr, minc] if 0 <= minr < rows and 0 <= minc < cols else 0.0
+                top_right = image[minr, maxc] if 0 <= minr < rows and 0 <= maxc < cols else 0.0
+                bottom_left = image[maxr, minc] if 0 <= maxr < rows and 0 <= minc < cols else 0.0
+                bottom_right = image[maxr, maxc] if 0 <= maxr < rows and 0 <= maxc < cols else 0.0
+                top = (1 - dc) * top_left + dc * top_right
+                bottom = (1 - dc) * bottom_left + dc * bottom_right
+                texture = (1 - dr) * top + dr * bottom
+                signed_texture[i] = 1 if texture - center >= 0 else 0
+            changes = 0
+            for i in range(P - 1):
+                changes += (signed_texture[i] - signed_texture[i + 1]) != 0
+            lbp = 0.0
+            if changes <= 2:
+                for i in range(P):
+                    lbp += signed_texture[i]
+            else:
+                lbp = P + 1
+            output[r, c] = lbp
+
+
+def lbp(xy_intensities, n_points, radius):
+    """Local binary pattern ("uniform"), bit-identical to skimage.feature.local_binary_pattern.
+
+    Threads: numba's pool, set from CONST.THREADS in cli.py.
+    """
+    # skimage's circle points: local position of texture elements, rounded to 5 decimals
+    rp = np.round(-radius * np.sin(2 * np.pi * np.arange(n_points, dtype=np.float64) / n_points), 5)
+    cp = np.round(radius * np.cos(2 * np.pi * np.arange(n_points, dtype=np.float64) / n_points), 5)
+    image = np.ascontiguousarray(xy_intensities, dtype=np.float64)
+    output = np.zeros(image.shape, dtype=np.float64)
+    _lbp_uniform(image, rp, cp, output)
+    return (output,)
 
 
 def edge_strength(xy_intensities):
@@ -86,15 +109,10 @@ def edge_strength(xy_intensities):
     return (np.log10(np.sqrt(grad_x**2 + grad_y**2) + 1),)
 
 
-def energy(xy_intensities, window_size, threads):
+def energy(xy_intensities, window_size):
     """Log10 local energy: gaussian-weighted mean of squared intensities (radius window_size)."""
     squared_image = xy_intensities.astype(np.float64) ** 2
-    energy_image = _row_chunked(
-        lambda rows: gaussian_filter(rows, sigma=1, radius=window_size),
-        squared_image,
-        window_size,
-        threads,
-    )
+    energy_image = gaussian_filter(squared_image, sigma=1, radius=window_size)
     return (np.log10(energy_image + 1),)
 
 

@@ -48,7 +48,7 @@ def main(crop_path, threads):
     density = (crop // 64).astype(np.int64)
     for modality, image in [("hqpr", crop), ("hqtr", density)]:
         with tempfile.TemporaryDirectory() as tmp, MonkeyPatch.context() as monkeypatch:
-            compare(image, modality, tmp, monkeypatch, threads)
+            compare(image, modality, tmp, monkeypatch)
         print(
             f"[EXACT] {modality}: all parquets and plotted arrays byte-identical",
             flush=True,
@@ -65,6 +65,7 @@ def main(crop_path, threads):
     with MonkeyPatch.context() as monkeypatch:
         record_calls(monkeypatch)
         texture_metrics(tex[:20, :20], 5)
+        pixel_metrics.lbp(xy[:20, :20], 100, 3)
         reference.pixel_entropy("", tex[:20, :20], 5, None)
         reference.pixel_uniformity("", tex[:20, :20], 5, None)
         reference.pixel_homogeneity("", tex[:20, :20], None, 5)
@@ -77,7 +78,7 @@ def main(crop_path, threads):
             lambda: pixel_metrics.signal_noise_ratio(xy, background),
         )
         old["lbp"] = timed("old lbp", lambda: reference.pixel_lbp("", xy, 100, 3, None))
-        new["lbp"] = timed("new lbp", lambda: pixel_metrics.lbp(xy, 100, 3, threads))
+        new["lbp"] = timed("new lbp", lambda: pixel_metrics.lbp(xy, 100, 3))
         old["edge_strength"] = timed(
             "old edge_strength", lambda: reference.pixel_edge_strength("", xy, None)
         )
@@ -88,7 +89,7 @@ def main(crop_path, threads):
             "old energy", lambda: reference.pixel_energy("", xy, 5, None)
         )
         new["energy"] = timed(
-            "new energy", lambda: pixel_metrics.energy(xy, 5, threads)
+            "new energy", lambda: pixel_metrics.energy(xy, 5)
         )
         old["relevance"] = timed(
             "old relevance", lambda: reference.pixel_relevance("", xy, background, None)

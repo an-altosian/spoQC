@@ -6,6 +6,7 @@ to the metrices folder (each is a pixel-clustering feature) must match byte for 
 same file names, and every plot_pixels call must receive the same array, dtype and arguments.
 """
 
+import math
 import os
 from types import SimpleNamespace
 
@@ -14,6 +15,7 @@ import dask.array as da
 import numpy as np
 import pyarrow.parquet as pq
 import pytest
+from skimage.feature import local_binary_pattern
 
 import reference_pixel_metrics_fca01f5 as reference
 from spoqc import helperfuncs
@@ -170,20 +172,19 @@ def assert_same_tables(new, old):
         assert a.dtype == b.dtype and a.tobytes() == b.tobytes(), name
 
 
-def compare(image, modality, tmp_path, monkeypatch, threads):
+def compare(image, modality, tmp_path, monkeypatch):
     # cv2.GaussianBlur on uint16 (relevance) varies call to call on small images at >= 32 cv2 threads
     # (cv2's default here is every host CPU), in the original too.
-    # Pinned to 1 so the original's own race cannot flake the comparison; `threads` still drives
-    # numba and the LBP / energy thread pools.
+    # Pinned to 1 so the original's own race cannot flake the comparison (numba threads are separate).
     previous = cv2.getNumThreads()
     cv2.setNumThreads(1)
     try:
-        return _compare(image, modality, tmp_path, monkeypatch, threads)
+        return _compare(image, modality, tmp_path, monkeypatch)
     finally:
         cv2.setNumThreads(previous)
 
 
-def _compare(image, modality, tmp_path, monkeypatch, threads):
+def _compare(image, modality, tmp_path, monkeypatch):
     old = run(
         reference.start_image_struc_analyis,
         f"{tmp_path}/old",
@@ -192,8 +193,7 @@ def _compare(image, modality, tmp_path, monkeypatch, threads):
         monkeypatch,
     )
     monkeypatch.undo()
-    new = run(structure_analysis.start_image_struc_analyis, f"{tmp_path}/new", image, modality, monkeypatch,
-              threads=threads)  # fmt: skip
+    new = run(structure_analysis.start_image_struc_analyis, f"{tmp_path}/new", image, modality, monkeypatch)
     assert_same_calls(new[0], old[0])
     assert_same_tables(new[1], old[1])
     assert new[2] == old[2]
@@ -205,7 +205,7 @@ def _compare(image, modality, tmp_path, monkeypatch, threads):
 @pytest.mark.parametrize("kind", HQPR_KINDS)
 def test_hqpr_matches_original(kind, shape, numba_threads, tmp_path, monkeypatch):
     image = make_image(kind, shape, np.random.default_rng(sum(shape)))
-    _, tables, _ = compare(image, "hqpr", tmp_path, monkeypatch, numba_threads)
+    _, tables, _ = compare(image, "hqpr", tmp_path, monkeypatch)
     expected = [
         "edge_strength",
         "energy",
@@ -224,7 +224,7 @@ def test_hqpr_matches_original(kind, shape, numba_threads, tmp_path, monkeypatch
 @pytest.mark.parametrize("kind", HQTR_KINDS)
 def test_hqtr_matches_original(kind, shape, numba_threads, tmp_path, monkeypatch):
     image = make_image(kind, shape, np.random.default_rng(sum(shape)))
-    _, tables, _ = compare(image, "hqtr", tmp_path, monkeypatch, numba_threads)
+    _, tables, _ = compare(image, "hqtr", tmp_path, monkeypatch)
     expected = ["edge_strength", "energy", "entropy", "homogenity", "lbp", "relevance", "transcript_density",
                 "uniformity"]  # fmt: skip
     assert list(tables) == [f"{m}_output_hqtr.parquet" for m in expected]
@@ -242,10 +242,63 @@ def test_texture_metrics_constant_window_is_perfectly_homogeneous():
     assert (uniformity == np.float32(np.log(25))).all()  # kl = -(1 * log(1 / (1/25)))
 
 
-def test_row_chunked_matches_whole_image_with_more_chunks_than_rows():
-    image = np.arange(3 * 11, dtype=np.float64).reshape(3, 11) ** 2
-    whole = pixel_metrics.lbp(image, 100, 3, 1)[0]
-    assert pixel_metrics.lbp(image, 100, 3, 4)[0].tobytes() == whole.tobytes()
+def lbp_tie_images(P, R, n=4000, width=16, period=16):
+    """Column-constant uint16 images where a circle point lands on an exact interpolation tie.
+
+    For each point k whose row offset rp[k] = f + num/D (reduced fraction), rows f and f+1 below
+    a row of value cval = num/g hold 0 and D, so the interpolated sample equals the centre
+    exactly and texture - centre >= 0 hinges on the last bit of dr. These are the cases where
+    chunked (row-offset) LBP differed from one whole-image call.
+    """
+    i = np.arange(P, dtype=np.float64)
+    rp = np.round(-R * np.sin(2 * np.pi * i / P), 5)
+    for k in range(P):
+        f = math.floor(rp[k])
+        num = round((rp[k] - f) * 100000)
+        if num == 0:
+            continue
+        g = math.gcd(num, 100000)
+        denominator, cval = 100000 // g, num // g
+        if denominator > 65535:
+            continue
+        img = np.full((n, width), 1, np.uint16)
+        for r0 in range(8, n - 8, period):
+            img[r0] = cval
+            img[r0 + f] = 0
+            img[r0 + f + 1] = denominator
+        yield k, img
+
+
+LBP_PARAMS = [(100, 3), (8, 1), (8, 1.5), (16, 2.5), (24, 3.7), (12, 0.4)]
+
+
+@pytest.mark.parametrize("numba_threads", [1, 4], indirect=True)
+@pytest.mark.parametrize("n_points, radius", [p for p in LBP_PARAMS if p != (8, 1)])  # (8, 1): no tie fits uint16
+def test_lbp_matches_skimage_on_interpolation_ties(n_points, radius, numba_threads):
+    cases = 0
+    for k, img in lbp_tie_images(n_points, radius):
+        expected = local_binary_pattern(img, n_points, radius, method="uniform")
+        got = pixel_metrics.lbp(img, n_points, radius)[0]
+        assert got.dtype == expected.dtype and got.tobytes() == expected.tobytes(), (k, int((got != expected).sum()))
+        cases += 1
+    assert cases > 0
+
+
+@pytest.mark.parametrize("numba_threads", [1, 4], indirect=True)
+@pytest.mark.parametrize("n_points, radius", LBP_PARAMS)
+@pytest.mark.parametrize("kind", ["levels0-3", "gamma", "flat_perturbed", "int64_density", "tiny"])
+def test_lbp_matches_skimage_on_random_images(kind, n_points, radius, numba_threads):
+    rng = np.random.default_rng(n_points)
+    img = {
+        "levels0-3": lambda: rng.integers(0, 4, (3000, 48)).astype(np.uint16),
+        "gamma": lambda: rng.gamma(2, 30, (700, 301)).astype(np.uint16),
+        "flat_perturbed": lambda: np.where((np.arange(3000)[:, None] % 13 == 0) & (np.arange(48) % 5 == 0), 1001, 1000).astype(np.uint16),
+        "int64_density": lambda: make_image("density", (301, 257), rng),
+        "tiny": lambda: rng.integers(0, 5, (3, 2)).astype(np.uint16),
+    }[kind]()
+    expected = local_binary_pattern(img, n_points, radius, method="uniform")
+    got = pixel_metrics.lbp(img, n_points, radius)[0]
+    assert got.dtype == expected.dtype and got.tobytes() == expected.tobytes(), int((got != expected).sum())
 
 
 def float64_texture(img):
