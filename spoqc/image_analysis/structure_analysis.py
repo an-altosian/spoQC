@@ -113,12 +113,7 @@ def start_image_struc_analyis(
     bin_edges = None
 
     if ( modality == 'hqpr' ):
-        background_intensity, hist, bin_edges = metrics.image.utility.estimate_background_intensity_dask(
-            sdata,
-            image_type,
-            resolution,
-            staining
-        )
+        background_intensity, hist, bin_edges = metrics.image.utility.estimate_background_intensity(xy_intensities)
 
     def run(names, kernel, image, plots, **kernel_args):
         # Every file the metrices folder holds with this suffix is a pixel clustering feature
@@ -180,3 +175,5 @@ def start_image_struc_analyis(
             [('entropy', 'Pixel Entropy', None), ('uniformity', 'Pixel Uniformity', None),
              ('homogeneity', 'Pixel Homogeneity', None)],
             window_size=5)
+
+    return background_intensity
