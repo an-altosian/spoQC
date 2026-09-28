@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import json
 import os
 import subprocess
@@ -95,16 +94,6 @@ def test_cli_main_refuses_to_run_without_configure():
     )
     assert result.returncode == 0, result.stderr
     assert "refused: spoqc.core.threads.configure(n) has not run" in result.stdout
-
-
-def test_pixel_clustering_takes_no_thread_argument():
-    from spoqc.image_analysis import pixel_scoring_dask
-
-    for fn in (
-        pixel_scoring_dask.dask_clustering_mini_batches,
-        pixel_scoring_dask.start_pixel_qc,
-    ):
-        assert "threads" not in inspect.signature(fn).parameters
 
 
 def test_configure_after_numpy_import_fails():

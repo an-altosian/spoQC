@@ -74,11 +74,6 @@ def generate_transcript_density_image(
 
     xy_transcript_density = transcript_density_list.reshape(dim_x, dim_y)
 
-    img_extent = sd.get_extent(sdata[image_type], coordinate_system='global')
-    imagedim = helperfuncs.ImageDimStruct(img_extent['x'][0], img_extent['y'][0],
-                                        img_extent['x'][1], img_extent['y'][1])
-    nuclei_centroid_coords = sd.get_centroids(sdata['nucleus_boundaries'], coordinate_system='global').compute()
-
     print("[NOTE] Densitiy calculation")
     timer.start()
     xy_kernel_transcript_density = disk_density(xy_transcript_density, kernel_radius, threads.N)
@@ -87,6 +82,10 @@ def generate_transcript_density_image(
     # xy_kernel_transcript_density = xy_kernel_transcript_density.astype(np.uint16) # conversion needed for cv2
 
     if ( figure_path != None ):
+        img_extent = sd.get_extent(sdata[image_type], coordinate_system='global')
+        imagedim = helperfuncs.ImageDimStruct(img_extent['x'][0], img_extent['y'][0],
+                                            img_extent['x'][1], img_extent['y'][1])
+        nuclei_centroid_coords = sd.get_centroids(sdata['nucleus_boundaries'], coordinate_system='global').compute()
 
         if ( flip ):
             helperfuncs.plot_pixels(
