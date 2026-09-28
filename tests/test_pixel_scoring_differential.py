@@ -107,6 +107,15 @@ class TestBackgroundIntensity:
         for e, g in zip(expected, got):
             assert bits_equal(e, g), dtype
 
+    def test_float64_values_on_bin_edges_match_dask_histogram(self):
+        # Values a hair either side of every bin edge: any precision loss moves counts between bins.
+        edges = np.linspace(0.0, 1000.0, 101)
+        image = np.concatenate([edges, edges[1:-1] - 1e-9, edges[1:-1] + 1e-9]).reshape(13, 23)  # 299 values
+        expected = reference.estimate_background_intensity_dask(fake_sdata(image), "morphology_focus", "scale0", "0")
+        got = utility.estimate_background_intensity(image)
+        for e, g in zip(expected, got):
+            assert bits_equal(e, g)
+
     def test_all_nan_raises_like_dask(self):
         image = np.full((5, 5), np.nan, np.float32)
         with pytest.raises(ValueError):
@@ -147,6 +156,11 @@ class TestPixelFeatures:
         (tmp_path / "unrelated_output_other.parquet").touch()
         assert pixel_scoring_dask.pixel_feature_files(str(tmp_path), modality, suffix) == [
             f"{tmp_path}/{name}_output_{suffix}.parquet" for name in names]
+
+    def test_feature_lists_are_the_documented_ones(self):
+        # docs/perf/hqpr_pixel_scoring.md: the order structure analysis writes the metrics in.
+        texture = ['lbp', 'edge_strength', 'energy', 'relevance', 'entropy', 'uniformity', 'homogenity']
+        assert pixel_scoring_dask.PIXEL_FEATURE_NAMES == {'hqpr': ['intensity'] + texture, 'hqtr': ['transcript_density'] + texture}
 
     def test_missing_feature_raises(self, tmp_path):
         for name in pixel_scoring_dask.PIXEL_FEATURE_NAMES["hqpr"][1:]:
