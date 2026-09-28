@@ -528,7 +528,8 @@ def run(CONST):
             dim_x,
             dim_y,
             CONST.STAINING,
-            celltype_refined=False
+            celltype_refined=False,
+            threads=CONST.THREADS
         )
 
         print('[finish]')
