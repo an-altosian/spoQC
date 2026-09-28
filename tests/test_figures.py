@@ -1,6 +1,8 @@
 import os
 import pickle
+import time
 
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -21,6 +23,13 @@ def pool():
     figures.start(WORKERS)
     yield figures
     figures.stop()
+
+
+def _until(condition, timeout=60):
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.05)
 
 
 def _scatter(n=100, seed=0):
@@ -94,7 +103,7 @@ class TestErrors:
 
     def test_worker_error_is_raised_by_the_next_save(self, pool, tmp_path):
         save_figure(_scatter(), tmp_path / "missing_dir" / "a.png")
-        next(iter(pool._pending)).exception()  # let the failing write finish
+        _until(lambda: figures._errors)  # the failing write has finished
         with pytest.raises(FileNotFoundError):
             save_figure(_scatter(), tmp_path / "b.png")
 
@@ -143,8 +152,10 @@ class TestWorkers:
             save_figure(fig, tmp_path / f"{i}.png", dpi=20)
             plt.close(fig)
         pool.wait()
-        assert pool._executor._max_workers == WORKERS
-        assert 0 < len(pool._executor._processes) <= WORKERS
+        background = max(1, WORKERS // figures.THREADS_PER_FIGURE_WORKER)
+        assert pool._executor._max_workers == background
+        assert 0 < len(pool._executor._processes) <= background
+        assert background + figures._workers[figures._drain] == WORKERS
 
 
 class TestImageReduction:
@@ -158,19 +169,27 @@ class TestImageReduction:
 
     def _reduced_shape(self, fig):
         reduced = figures._reduced_images(fig, 50)
-        return None if not reduced else next(iter(reduced.values())).shape
+        return None if not reduced else next(iter(reduced.values())).shape[:2]
+
+    @staticmethod
+    def _side(samples_per_pixel, n=4000):
+        """Reduced side for `n` samples at `samples_per_pixel` per output pixel."""
+        k = int(samples_per_pixel / figures.IMAGE_SAMPLES_PER_PIXEL)
+        return -(-n // k)
 
     def test_float_image_is_block_averaged_to_the_output_density(self):
         fig, _ = self._imshow(np.zeros((4000, 4000), dtype=np.float32))
-        # 40 samples per output pixel -> blocks of 40 // 4 = 10
-        assert self._reduced_shape(fig) == (400, 400)
+        # 40 samples per output pixel
+        assert self._reduced_shape(fig) == (self._side(40),) * 2
 
     def test_one_pixel_lines_survive_block_averaging(self):
         data = np.zeros((4000, 4000), dtype=np.float32)
         data[::97, :] = 1.0  # 1-px lines, never aligned to a block
         fig, _ = self._imshow(data)
-        reduced = next(iter(figures._reduced_images(fig, 50).values()))
-        assert (reduced.max(axis=1) > 0).sum() == len(range(0, 4000, 97))
+        reduced = next(iter(figures._reduced_images(fig, 50).values())).astype(int)
+        background = reduced[-1, -1]  # a block with no line (4000 - 1 is not a multiple of 97)
+        rows_with_line = (np.abs(reduced - background).sum(axis=-1) > 0).any(axis=1)
+        assert rows_with_line.sum() == len(range(0, 4000, 97))
 
     @pytest.mark.parametrize("dtype", [np.uint8, np.int32, bool])
     def test_integer_bool_and_label_images_are_never_reduced(self, dtype):
@@ -186,7 +205,7 @@ class TestImageReduction:
 
     def test_world_unit_extent_translated_far_from_origin(self):
         fig, _ = self._imshow(np.zeros((4000, 4000), dtype=np.float32), extent=(1e5, 1e5 + 50, 2e5, 2e5 + 50))
-        assert self._reduced_shape(fig) == (400, 400)
+        assert self._reduced_shape(fig) == (self._side(40),) * 2
 
     def test_image_with_its_own_transform(self):
         # spatialdata-plot style: pixel-unit extent, world units via the image transform
@@ -196,13 +215,13 @@ class TestImageReduction:
                   transform=Affine2D().scale(0.25).translate(300, 700) + ax.transData)
         ax.set_xlim(300, 1300)
         ax.set_ylim(1700, 700)
-        assert self._reduced_shape(fig) == (400, 400)
+        assert self._reduced_shape(fig) == (self._side(40),) * 2
 
     def test_zoomed_in_image_is_reduced_less(self):
         fig, ax = self._imshow(np.zeros((4000, 4000), dtype=np.float32))
-        ax.set_xlim(0, 1000)  # 4x zoom: 10 samples per output pixel -> blocks of 2
+        ax.set_xlim(0, 1000)  # 4x zoom: 10 samples per output pixel
         ax.set_ylim(1000, 0)
-        assert self._reduced_shape(fig) == (2000, 2000)
+        assert self._reduced_shape(fig) == (self._side(10),) * 2
 
     def test_strongly_zoomed_image_keeps_full_resolution(self):
         fig, ax = self._imshow(np.zeros((4000, 4000), dtype=np.float32))
@@ -293,7 +312,7 @@ class TestPoolLifecycle:
         for i in range(12):
             save_figure(_scatter(n=50_000, seed=i), tmp_path / f"{i}.png", dpi=200)
         figures.abort()
-        assert figures._executor is None and not figures._pending
+        assert figures._executor is None and not figures._held and not figures._in_flight
         assert len(list(tmp_path.glob("*.png"))) < 12
 
     def test_pending_bytes_stay_under_the_cap(self, pool, tmp_path, monkeypatch):
@@ -301,7 +320,7 @@ class TestPoolLifecycle:
         monkeypatch.setattr(figures, "MAX_PENDING_BYTES", 3 * blob)
         for i in range(20):
             save_figure(_scatter(n=5_000, seed=i), tmp_path / f"{i}.png", dpi=50)
-            assert sum(figures._pending.values()) <= 3 * blob
+            assert figures._pending_bytes() <= 3 * blob
         pool.wait()
         assert len(list(tmp_path.glob("*.png"))) == 20
 
@@ -320,10 +339,10 @@ class TestCli:
         monkeypatch.setattr(cli, "run", run)
         cli.main(build_parser().parse_args(["-i", str(tmp_path), "-o", str(tmp_path), "-t", str(tmp_path), "-n", "12"]))
 
-    def test_pool_gets_a_share_of_the_thread_budget_and_is_stopped(self, monkeypatch, tmp_path):
+    def test_pool_gets_the_thread_budget_and_is_stopped(self, monkeypatch, tmp_path):
         calls = []
         self._main(monkeypatch, tmp_path, lambda CONST: None, calls)
-        assert calls == [("start", 12 // figures.THREADS_PER_FIGURE_WORKER), ("stop",)]
+        assert calls == [("start", 12), ("stop",)]
 
     def test_a_failing_step_aborts_the_pool_and_propagates(self, monkeypatch, tmp_path):
         def run(CONST):
@@ -332,7 +351,7 @@ class TestCli:
         calls = []
         with pytest.raises(RuntimeError, match="step failed"):
             self._main(monkeypatch, tmp_path, run, calls)
-        assert calls == [("start", 12 // figures.THREADS_PER_FIGURE_WORKER), ("abort",)]
+        assert calls == [("start", 12), ("abort",)]
 
 
 def _png(path):
@@ -468,3 +487,93 @@ def _worker_thread_pools():
 def test_figure_workers_run_single_threaded(pool):
     report = pool._executor.submit(_worker_thread_pools).result()
     assert report == {"N": 1, "polars": 1, "numba": 1, "cv2": 1, "native": [1]}
+
+
+class TestColourAverage:
+    def test_kernel_matches_matplotlib_colours_averaged_premultiplied(self):
+        rng = np.random.default_rng(0)
+        data = np.ma.masked_array(rng.normal(0.5, 0.4, (37, 53)), mask=rng.random((37, 53)) < 0.1)
+        cmap = plt.get_cmap("hot").with_extremes(under="blue", over="green", bad=(1, 0, 0, 0.5))
+        for clip in (False, True):
+            fig, ax = plt.subplots()
+            image = ax.imshow(data, cmap=cmap, norm=matplotlib.colors.Normalize(0.1, 0.9, clip=clip))
+            got = figures._colour_average(image, 4).astype(float) / 255
+            rgba = image.to_rgba(data)  # matplotlib's own colours, bad/under/over included
+            rgba[..., :3] *= rgba[..., 3:]
+            starts = [np.arange(0, n, 4) for n in data.shape]
+            sums = np.add.reduceat(np.add.reduceat(rgba, starts[0], axis=0), starts[1], axis=1)
+            counts = np.multiply.outer(*[np.diff(np.append(s, n)) for s, n in zip(starts, data.shape)])
+            want = np.concatenate([sums[..., :3] / sums[..., 3:], (sums[..., 3] / counts)[..., None]], axis=-1)
+            np.testing.assert_allclose(got, want, atol=0.5 / 255 + 1e-9)
+            plt.close(fig)
+
+    def test_non_linear_norm_is_never_reduced(self):
+        fig = plt.figure(figsize=(2, 2), dpi=50)
+        ax = fig.add_axes((0, 0, 1, 1))
+        ax.imshow(np.random.default_rng(0).random((4000, 4000)) + 0.1, norm=matplotlib.colors.LogNorm())
+        assert figures._reduced_images(fig, 50) == {}
+
+    def test_noisy_texture_looks_like_the_full_resolution_render(self, tmp_path):
+        # LBP-like per-pixel noise at the full-scale hqtr density (18 samples per output pixel):
+        # averaging values would draw it as one flat mid colour; averaging colours does not.
+        codes = np.random.default_rng(0).integers(0, 102, (3600, 3600)).astype(np.float64)
+        fig = plt.figure(figsize=(2, 2), dpi=100)
+        ax = fig.add_axes((0, 0, 1, 1))
+        ax.imshow(codes, cmap="hot")
+        save_figure(fig, tmp_path / "reduced.png")
+        save_figure(fig, tmp_path / "exact.png", exact=True)
+        plt.close(fig)
+        assert np.abs(_png(tmp_path / "reduced.png") - _png(tmp_path / "exact.png")).mean() < 3
+
+
+class TestDrain:
+    def _slow_figures(self, tmp_path, n):
+        for i in range(n):
+            fig = _scatter(n=100_000, seed=i)
+            save_figure(fig, tmp_path / f"{i}.png", dpi=150)
+            plt.close(fig)
+
+    def test_wait_moves_queued_figures_to_a_drain_pool_of_the_rest_of_the_budget(self, tmp_path, monkeypatch):
+        pools = []
+        real_pool = figures._pool
+        monkeypatch.setattr(figures, "_pool", lambda n: pools.append(n) or real_pool(n))
+        figures.start(4)
+        in_flight = []
+        real_dispatch = figures._dispatch
+        monkeypatch.setattr(figures, "_dispatch", lambda: real_dispatch() or in_flight.append(len(figures._in_flight)))
+        try:
+            self._slow_figures(tmp_path, 8)
+            computing = max(in_flight)
+            drain_submit = figures._drain.submit
+            moved = []
+            monkeypatch.setattr(figures._drain, "submit", lambda *a: moved.append(a) or drain_submit(*a))
+            figures.wait()
+        finally:
+            figures.stop()
+        assert pools == [1, 3]  # background 4 // THREADS_PER_FIGURE_WORKER, drain the other 3
+        assert computing == 1  # while the main thread computes: the background worker only
+        assert max(in_flight) == 4 and moved  # while it waits: the whole budget
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted(f"{i}.png" for i in range(8))
+
+    def test_a_budget_of_one_thread_has_no_drain_pool(self, tmp_path, monkeypatch):
+        pools = []
+        real_pool = figures._pool
+        monkeypatch.setattr(figures, "_pool", lambda n: pools.append(n) or real_pool(n))
+        figures.start(1)
+        try:
+            self._slow_figures(tmp_path, 3)
+        finally:
+            figures.stop()
+        assert pools == [1]
+        assert len(list(tmp_path.glob("*.png"))) == 3
+
+    def test_drain_pool_errors_propagate_from_wait(self, tmp_path):
+        figures.start(4)
+        try:
+            self._slow_figures(tmp_path, 3)
+            for i in range(3):
+                save_figure(_scatter(), tmp_path / "missing_dir" / f"{i}.png")
+            with pytest.raises(FileNotFoundError):
+                figures.wait()
+        finally:
+            figures.abort()

@@ -182,9 +182,9 @@ def main(args_ns: argparse.Namespace) -> None:
         print(f'Attribute Name: {attr_name}')
         print(f'Attribute Value: {attr_value}')
 
-    # Figures are written by worker processes while the main thread computes on; they get a share
-    # of the thread budget (see spoqc.core.figures).
-    figures.start(max(1, CONST.THREADS // figures.THREADS_PER_FIGURE_WORKER))
+    # Figures are written by worker processes while the main thread computes on; figures.start
+    # splits the thread budget between them and the compute (see spoqc.core.figures).
+    figures.start(CONST.THREADS)
     try:
         run(CONST)
     except BaseException:
