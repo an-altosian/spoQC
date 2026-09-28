@@ -22,7 +22,7 @@ from pytest import MonkeyPatch
 import reference_pixel_metrics_fca01f5 as reference
 from spoqc.image_analysis._slidingwindow import texture_metrics
 from spoqc.metrics.image import pixel_metrics
-from test_pixel_metrics_differential import compare, record_calls
+from test_pixel_metrics_differential import compare, float64_reference_texture, float64_texture, record_calls
 
 
 def timed(label, func):
@@ -59,6 +59,9 @@ def main(crop_path, threads):
         (xy.astype(np.float64) - xy.min()) / max(xy.max() - xy.min(), 1) * 255
     ).astype(np.uint8)
     background = 91.0
+    for name, a, b in zip(["entropy", "kl", "homogeneity"], float64_texture(tex), float64_reference_texture(tex)):
+        assert a.tobytes() == b.tobytes(), name
+    print("[EXACT] texture window sums byte-identical at float64", flush=True)
     with MonkeyPatch.context() as monkeypatch:
         record_calls(monkeypatch)
         texture_metrics(tex[:20, :20], 5)

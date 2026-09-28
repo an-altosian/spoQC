@@ -172,9 +172,11 @@ def assert_same_tables(new, old):
 
 def compare(image, modality, tmp_path, monkeypatch, threads):
     # cv2.GaussianBlur on uint16 (relevance) varies call to call on small images at >= 32 cv2 threads
-    # (cv2's default here is every host CPU), in the original too; at <= 8 threads it matches 1 thread.
+    # (cv2's default here is every host CPU), in the original too.
+    # Pinned to 1 so the original's own race cannot flake the comparison; `threads` still drives
+    # numba and the LBP / energy thread pools.
     previous = cv2.getNumThreads()
-    cv2.setNumThreads(threads)
+    cv2.setNumThreads(1)
     try:
         return _compare(image, modality, tmp_path, monkeypatch, threads)
     finally:
@@ -244,3 +246,32 @@ def test_row_chunked_matches_whole_image_with_more_chunks_than_rows():
     image = np.arange(3 * 11, dtype=np.float64).reshape(3, 11) ** 2
     whole = pixel_metrics.lbp(image, 100, 3, 1)[0]
     assert pixel_metrics.lbp(image, 100, 3, 4)[0].tobytes() == whole.tobytes()
+
+
+def float64_texture(img):
+    """The new texture kernel stored at float64, i.e. before the float32 rounding that masks
+    1-ulp differences in the per-window sums."""
+    out = [np.empty(img.shape, np.float64) for _ in range(3)]
+    _slidingwindow._texture_windows(np.pad(img, 2, mode="reflect"), 2, *out)
+    return out
+
+
+def float64_reference_texture(img):
+    return [
+        reference.sliding_window_padded(kernel, img, 2, dtype=np.float64, mode="reflect")
+        for kernel in (reference.entropy, reference.kl_divergence_uniform, reference.homogeneity)
+    ]
+
+
+@pytest.mark.parametrize("numba_threads", [4], indirect=True)
+@pytest.mark.parametrize(
+    "image",
+    [
+        np.random.default_rng(1).integers(0, 256, (1030, 517)).astype(np.uint8),  # many distinct values
+        make_image("density", (517, 1030), np.random.default_rng(2)),
+    ],
+    ids=["uint8", "int64_density"],
+)
+def test_texture_window_sums_match_original_at_float64(image, numba_threads):
+    for name, new, old in zip(["entropy", "kl", "homogeneity"], float64_texture(image), float64_reference_texture(image)):
+        assert new.tobytes() == old.tobytes(), name
