@@ -9,6 +9,7 @@ from matplotlib_venn import venn3
 
 from .. import helperfuncs
 from .. import metrics
+from spoqc.core import raster
 
 def start_combining_masks(
         sdata,
@@ -20,6 +21,7 @@ def start_combining_masks(
         dim_x,
         dim_y,
         staining,
+        threads,
         *,
         celltype_refined=False
 ):
@@ -52,6 +54,18 @@ def start_combining_masks(
     hqtr_belief_name = ''
     hqtr_mask_name = ''
     for type_of_belief in ['_smoothed', '']:
+        if type_of_belief == '':
+            # Known pre-existing failure, deliberately not fixed here (fixing it changes the step):
+            # 1. the modality loop at the end of the '_smoothed' pass overwrites `staining` (hqtr sets
+            #    it to None), so this pass would read hqpr_None_* files;
+            # 2. combined_beliefs sums the hard-coded *_beliefs_smoothed columns, which this pass
+            #    does not load.
+            # The pass used to die on the missing hqpr_None_* parquet; fail here with the reason.
+            raise NotImplementedError(
+                "combine_masks_zoom: the unsmoothed pass is broken (staining overwritten by the "
+                "modality loop; combined_beliefs hard-codes *_beliefs_smoothed); the smoothed "
+                "figures are complete"
+            )
         suf = ''
         if type_of_belief == '_smoothed':
            suf = '_smoothed'
@@ -141,6 +155,7 @@ def start_combining_masks(
             legend_dict={"no mask": "#000000", "1 mask": "#0000FF", "2 masks": "#008000", "all masks": "#FFFF00"}
         )
 
+        # Hard-coded *_smoothed columns: wrong for the unsmoothed pass (see the raise above).
         combined_beliefs = beliefs_df['hqcr_beliefs_smoothed'] + beliefs_df[f'hqpr_{staining}_beliefs_smoothed'] + beliefs_df['hqtr_beliefs_smoothed']
         combined_beliefs /= 3
 
@@ -174,32 +189,21 @@ def start_combining_masks(
 
         for modality in ['hqpr', 'hqtr']:
 
+            # Overwrites the `staining` argument, which the next type_of_belief pass still needs
+            # (see the raise at the top of the loop).
             if modality == 'hqtr':
                 staining = None
             else:
                 staining = '0'
 
-            if ( staining ):
-                spoqc_tmp_folder = f'{spoqc_tmp_folder}/metrices/{modality}/{staining}/'
-            else:
-                spoqc_tmp_folder = f'{spoqc_tmp_folder}/metrices/{modality}'
-
-            xy_intensities = None
-            intensities = None
+            # Flipped intensity image; for hqtr the transcript density image saved by the metrices step.
+            xy_intensities = raster.load_intensity_image(
+                sdata, spoqc_tmp_folder, modality, image_type, resolution, dim_x, dim_y, threads, staining=staining
+            )
             if ( modality == 'hqtr' ):
-                # Intensities already flipped
-                intensities = metrics.transcript_density.transcript_density_image.generate_transcript_density_image(
-                    sdata,
-                    figure_path,
-                    imagedim,
-                    image_type,
-                    resolution
+                metrics.transcript_density.transcript_density_image.plot_transcript_density(
+                    sdata, figure_path, image_type, xy_intensities
                 )
-                xy_intensities = intensities.reshape(dim_x, dim_y)
-            else:
-                xy_intensities = sdata[image_type][resolution].image.values[int(staining)]
-                xy_intensities = np.flipud(xy_intensities)
-                intensities = xy_intensities.flatten()
             
             # Plot intensities
             name = 'input'
