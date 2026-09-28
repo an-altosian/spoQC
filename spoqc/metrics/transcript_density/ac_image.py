@@ -62,8 +62,10 @@ def generate_transcript_ambient_density_image(
 
     x_idx = range(int(imagedim.bb_xmin), int(imagedim.bb_xmax))
     y_idx = range(int(imagedim.bb_ymin), int(imagedim.bb_ymax))
-    grid = [(x, y) for y in y_idx for x in x_idx]
-    grid_mi = pd.MultiIndex.from_tuples(grid, names=["x", "y"])
+    # pd.MultiIndex.from_product builds the identical index in C; from_tuples
+    # materialised one Python tuple per pixel first. Verified with
+    # mi_old.equals(mi_new) -> True, so every downstream value is unchanged.
+    grid_mi = pd.MultiIndex.from_product([y_idx, x_idx], names=["y", "x"]).swaplevel(0, 1)
 
     transcript_density_list = (
         gm.reindex(grid_mi)     # align to the full grid
