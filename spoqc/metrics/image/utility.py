@@ -5,15 +5,7 @@ import dask.array as da
 from ... import helperfuncs
 from spoqc.core.figures import save_figure
 
-def turn_into_uint8(arr):
-    # normalize to 0–1 if needed
-    if int(arr.min()) != 0 or int(arr.max()) != 1:
-        arr = (arr - arr.min()) / (arr.max() - arr.min())
-    # scale to 0–255 and convert to uint8
-    uint8_arr = (arr * 255).astype(np.uint8)
-    return uint8_arr
-
-def pixel_intensity_qc(figure_path, intensities, background_intensity, hist, bin_edges, dim_x, dim_y, imagedim):
+def plot_intensity_histogram(figure_path, background_intensity, hist, bin_edges):
 
     timer = helperfuncs.Timer()
 
@@ -39,21 +31,6 @@ def pixel_intensity_qc(figure_path, intensities, background_intensity, hist, bin
     with open(f'{figure_path}/histogram_intensity.html', 'w') as f:
         for fig in figures:
             f.write(fig.to_html(full_html=False, include_plotlyjs='cdn'))
-    
-    signal_noise_ratio_log2fc = np.log2( (intensities + 1) / background_intensity )
-
-    helperfuncs.plot_pixels(
-        figure_path,
-        np.array(signal_noise_ratio_log2fc).reshape(dim_x, dim_y),
-        imagedim,
-        'snr', 
-        'Log2 Signal-Noise-Ratio', 
-        'hot',
-        False,
-        False
-    )
-    
-    return signal_noise_ratio_log2fc
 
 
 def estimate_background_intensity_dask(sdata, image_type, resolution, staining, nbins=100, range_=None):
