@@ -9,14 +9,17 @@ import pytest
 
 
 class TestRelevanceMax:
-    """relevance.py:33 -- max(arr.flatten()) boxed every pixel as a Python int."""
+    """relevance.py:33 -- max(arr.flatten()) boxed every pixel as a Python int.
+    relevance now lives in pixel_metrics.relevance."""
 
     def test_source_no_longer_uses_builtin_max(self):
         import inspect
 
-        from spoqc.metrics.image import relevance
+        from spoqc.metrics.image import pixel_metrics
 
-        assert "max(xy_intensities.flatten())" not in inspect.getsource(relevance)
+        source = inspect.getsource(pixel_metrics.relevance)
+        assert "max(xy_intensities.flatten())" not in source
+        assert "xy_intensities.max()" in source
 
     @pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.float32])
     def test_result_identical(self, dtype):
