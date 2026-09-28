@@ -401,6 +401,51 @@ def main(args_ns: argparse.Namespace) -> None:
         obs_columns = subworkflows.qc_cell.run_qc_cell(sdata, figure_path, CONST, obs_columns)
 
     # In[]
+    #####################
+    ###### AMBIENT ######
+    #####################
+    if ( CONST.STEP in ['all', 'hqtr', 'unittest', 'ambientqc'] ):
+        figure_path = f'{CONST.FIGURE_PATH}/ambientqc/'
+        _ = subworkflows.qc_ambient.start_qc_ambient(sdata, figure_path, CONST.TMP_PATH)
+
+    # In[]
+    ##################
+    ###### HQTR ######
+    ##################
+    subworkflows.hqtr.get_hqtr(
+        sdata, 
+        CONST.TMP_PATH, 
+        imagedim, 
+        dim_x, 
+        dim_y, 
+        CONST, 
+        seed,
+        thresh_p=CONST.THRESHOLD_PRIOR_PIXEL,
+        nstds_p=CONST.NSTDS_PRIOR_PIXEL,
+    )
+
+    # In[]
+    ###########################
+    ###### TRANSCRIPT QC ######
+    ###########################
+    if ( CONST.STEP in ['all', 'transcriptqc'] ):
+        print('[NOTE] Transcript QC')
+        figure_path = f'{CONST.FIGURE_PATH}/transcriptqc/'
+        # subworkflows.qc_transcript.transcriptqc(
+        #     sdata,
+        #     figure_path,
+        #     f'{CONST.TRANSCRIPT_REFERENCE}',
+        #     'transcripts'
+        # )
+        subworkflows.qc_transcript.negativeprobeqc(sdata, figure_path)
+        print("[finish]")
+
+    # The transcript consumers (doubletqc .. transcriptqc) run back to back: load once,
+    # compute all, unload before hqcr/hqpr. None of the moved steps (ambientqc, hqtr,
+    # transcriptqc) reads anything hqcr/hqpr produce, and none uses a shared RNG state.
+    transcripts.release(sdata)
+
+    # In[]
     ##################
     ###### HQCR ######
     ##################
@@ -439,30 +484,6 @@ def main(args_ns: argparse.Namespace) -> None:
         subworkflows.hqpr.celltype_refinement_of_hqpr(sdata, CONST.TMP_PATH, imagedim, dim_x, dim_y, CONST)
     else:
         print("[NOTE] No annotation file provided so I will not perform celltype_refinement_of_hqpr")
-
-    # In[]
-    #####################
-    ###### AMBIENT ######
-    #####################
-    if ( CONST.STEP in ['all', 'hqtr', 'unittest', 'ambientqc'] ):
-        figure_path = f'{CONST.FIGURE_PATH}/ambientqc/'
-        _ = subworkflows.qc_ambient.start_qc_ambient(sdata, figure_path, CONST.TMP_PATH)
-
-    # In[]
-    ##################
-    ###### HQTR ######
-    ##################
-    subworkflows.hqtr.get_hqtr(
-        sdata, 
-        CONST.TMP_PATH, 
-        imagedim, 
-        dim_x, 
-        dim_y, 
-        CONST, 
-        seed,
-        thresh_p=CONST.THRESHOLD_PRIOR_PIXEL,
-        nstds_p=CONST.NSTDS_PRIOR_PIXEL,
-    )
 
     # In[]
     if ( CONST.ANNOTATION_FILE ):
@@ -506,25 +527,6 @@ def main(args_ns: argparse.Namespace) -> None:
         )
 
         print('[finish]')
-
-    # In[]
-    ###########################
-    ###### TRANSCRIPT QC ######
-    ###########################
-    if ( CONST.STEP in ['all', 'transcriptqc'] ):
-        print('[NOTE] Transcript QC')
-        figure_path = f'{CONST.FIGURE_PATH}/transcriptqc/'
-        # subworkflows.qc_transcript.transcriptqc(
-        #     sdata,
-        #     figure_path,
-        #     f'{CONST.TRANSCRIPT_REFERENCE}',
-        #     'transcripts'
-        # )
-        subworkflows.qc_transcript.negativeprobeqc(sdata, figure_path)
-        print("[finish]")
-
-    # negativeprobeqc is the last transcript consumer
-    transcripts.release(sdata)
 
     # In[]
     ##########################
