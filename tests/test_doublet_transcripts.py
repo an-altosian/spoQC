@@ -185,3 +185,46 @@ class TestFlagTranscriptsNearDoublets:
         )
         assert np.array_equal(new[0], ref[0]) and np.array_equal(new[1], ref[1])
         assert new[0].dtype == ref[0].dtype and new[1].dtype == ref[1].dtype
+
+
+def _legacy_write_transcript_doublets(sdata, key_transcripts, corrected_doublet_df, distance_thresh, threads, spoqc_tmp_folder):
+    """perf/integration 66736f2 doublet_score.py:223-238, verbatim."""
+    from spoqc import helperfuncs
+
+    # Have to call this again because overlpy corrects also the transcript coordinates
+    transcript_coordinates_df = sdata.points[key_transcripts].compute()
+
+    # Detect transcript that might belong to doublets
+    transcript_doublet, transcript_wdoublet = flag_transcripts_near_doublets(
+        transcript_coordinates_df, corrected_doublet_df, distance_thresh, threads
+    )
+
+    # Write out transcript doublet information for later usage
+    transcript_doublet_df = pd.DataFrame({
+        'doublet': transcript_doublet,
+        'wdoublet': transcript_wdoublet,
+    })
+    transcript_doublet_df.index = transcript_coordinates_df.index
+
+    helperfuncs.df_to_parquet(transcript_doublet_df, 'doublet', spoqc_tmp_folder, [], 'transcripts')
+
+
+@pytest.mark.parametrize("crop", [None, (10, 10, 60, 50)], ids=["full", "dev_test_crop"])
+def test_write_transcript_doublets_matches_the_original(synthetic_zarr, crop, tmp_path):
+    from conftest import cli_sdata
+
+    from spoqc.metrics.segmentation.doublet_score import write_transcript_doublets
+
+    sdata = cli_sdata(synthetic_zarr, crop)
+    frame = sdata.points["transcripts"].compute()
+    doublets = frame[["x", "y"]].iloc[::997].astype(np.float64).reset_index(drop=True)
+    (tmp_path / "old").mkdir()
+    (tmp_path / "new").mkdir()
+    _legacy_write_transcript_doublets(sdata, "transcripts", doublets, 2.0, 2, str(tmp_path / "old"))
+    write_transcript_doublets(sdata, doublets, 2.0, 2, str(tmp_path / "new"))
+    old = pd.read_parquet(tmp_path / "old" / "doublet_output_transcripts.parquet")
+    new = pd.read_parquet(tmp_path / "new" / "doublet_output_transcripts.parquet")
+    assert old["doublet"].sum() > 0
+    pd.testing.assert_frame_equal(new, old, check_exact=True)
+    if crop:
+        assert not old.index.equals(pd.RangeIndex(len(old))), "crop keeps the element's labels"

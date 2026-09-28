@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 
 from ... import helperfuncs
-from ...core import spatial
+from ...core import spatial, transcripts
 from spoqc.core.figures import save_figure
 
 # Initial doublet_distance of every cell, kept where no doublet is closer.
@@ -33,6 +33,27 @@ def flag_transcripts_near_doublets(
     transcript_doublet = np.zeros(len(transcript_xy), dtype=bool)
     transcript_doublet[transcript_pos] = True
     return transcript_doublet, transcript_doublet.astype(int)
+
+
+def write_transcript_doublets(sdata, corrected_doublet_df, distance_thresh, threads, spoqc_tmp_folder):
+    """Flag the transcripts near a doublet and write them, indexed like the transcripts element.
+
+    The coordinates come from the run's transcripts (ovrlpy never changes the caller's frame,
+    so the original second .compute() was not needed).
+    """
+    # Detect transcript that might belong to doublets
+    transcript_doublet, transcript_wdoublet = flag_transcripts_near_doublets(
+        transcripts.load_transcripts(sdata, ['x', 'y']).to_pandas(), corrected_doublet_df, distance_thresh, threads
+    )
+
+    # Write out transcript doublet information for later usage
+    transcript_doublet_df = pd.DataFrame({
+        'doublet': transcript_doublet,
+        'wdoublet': transcript_wdoublet,
+    })
+    transcript_doublet_df.index = transcripts.transcript_index(sdata)  # labels, not 0..n-1 after a crop
+
+    helperfuncs.df_to_parquet(transcript_doublet_df, 'doublet', spoqc_tmp_folder, [], 'transcripts')
 
 
 def flag_cells_near_doublets(cell_xy, doublet_xy, distance_thresh, threads):
@@ -220,19 +241,4 @@ def calc_doublet_score(
     sdata['table'].obs['wdoublet'] = np.array(cell_dobulet_df['wdoublet'])
     sdata['table'].obs['doublet_distance'] = np.array(cell_dobulet_df['doublet_distance'])
 
-    # Have to call this again because overlpy corrects also the transcript coordinates
-    transcript_coordinates_df = sdata.points[key_transcripts].compute()
-
-    # Detect transcript that might belong to doublets
-    transcript_doublet, transcript_wdoublet = flag_transcripts_near_doublets(
-        transcript_coordinates_df, corrected_doublet_df, distance_thresh, threads
-    )
-
-    # Write out transcript doublet information for later usage
-    transcript_doublet_df = pd.DataFrame({
-        'doublet': transcript_doublet,
-        'wdoublet': transcript_wdoublet,
-    })
-    transcript_doublet_df.index = transcript_coordinates_df.index
-
-    helperfuncs.df_to_parquet(transcript_doublet_df, 'doublet', spoqc_tmp_folder, [], 'transcripts')
+    write_transcript_doublets(sdata, corrected_doublet_df, distance_thresh, threads, spoqc_tmp_folder)
