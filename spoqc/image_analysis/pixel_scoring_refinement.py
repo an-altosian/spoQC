@@ -1,10 +1,9 @@
 
 # In[]
 import dask.dataframe as dd
-import pandas as pd
 
-from .. import helperfuncs
 from .. import hqr
+from ..core import parquet, threads
 
 # In[]
 def start_pixel_mask_refinement(
@@ -80,15 +79,16 @@ def start_pixel_mask_refinement(
     # freshly chunked dask.array against image_ddf.index (unknown divisions,
     # from a parquet read) preserves index-to-value association but not the
     # physical row order returned by .compute()/round-tripped through parquet.
-    out_df = pd.DataFrame({
+    columns = {
         f"{prefix}_beliefs": beliefs_raw,
         f"{prefix}_beliefs_smoothed": beliefs[:].flatten(),
         f"{prefix}_mask_smoothed": labels[:].flatten(),
-    })
-    n_partitions = max(1, -(-len(out_df) // chunk_size))
-    image_ddf = dd.from_pandas(out_df, npartitions=n_partitions)
-
-    helperfuncs.ddf_to_parquet(image_ddf, prefix, spoqc_tmp_folder, [], 'mask_smoothed_raw')
+    }
+    # origin/dev's parts: dd.from_pandas(npartitions=ceil(n / chunk_size))
+    n_rows = len(beliefs_raw)
+    starts = parquet.from_pandas_starts(n_rows, max(1, -(-n_rows // chunk_size)))
+    parquet.write_parts(f"{spoqc_tmp_folder}/{prefix}_output_mask_smoothed_raw", n_rows,
+                        parquet.columns_of(columns), starts, threads.budget())
 
 
 # # In[]

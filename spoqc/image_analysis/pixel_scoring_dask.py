@@ -10,8 +10,13 @@ from threadpoolctl import threadpool_limits
 from .. import helperfuncs
 from .. import metrics
 from .. import priors
+from ..core import parquet
 
 N_CLUSTERS = 100
+# The qv/ac prior partitions of origin/dev (10,000 rows), which also split its hqtr mask_raw.
+# The priors are now written in larger parts (priors.hqtr.ac_or_qv.PART_ROWS); mask_raw keeps
+# this layout until it is decided otherwise (docs/perf/hqtr_ambient.md).
+ORIGIN_PRIOR_PART_ROWS = 10_000
 
 # The k-means features of each modality, in column order: the metrics structure analysis writes,
 # in the order it writes them. origin/dev took every *{suffix}.parquet in os.listdir order,
@@ -226,16 +231,21 @@ def start_pixel_qc(
         }
         if modality == 'hqpr':
             belief_name = f"{modality}_{staining}_beliefs"
-            prior_columns, prior_divisions = priors.combine_priors.combine_priors_hqpr(
+            prior_columns = priors.combine_priors.combine_priors_hqpr(
                 norm_p_pixel_score, pixel_score_mask, belief_name, f"{modality}_{staining}_mask")
         if modality == 'hqtr':
             belief_name = f"{modality}_beliefs"
-            prior_columns, prior_divisions = priors.combine_priors.combine_priors_hqtr(
+            prior_columns = priors.combine_priors.combine_priors_hqtr(
                 spoqc_tmp_folder, norm_p_pixel_score, pixel_score_mask, belief_name, f"{modality}_mask")
         columns = columns | prior_columns
-        divisions = metrics.image.pixel_score.row_divisions(len(clusters), chunk_size)
-        if ( prior_divisions ):
-            divisions = sorted(set(divisions) | set(prior_divisions))
+        # mask_raw keeps origin/dev's parts. Its frame had dask divisions every chunk_size rows
+        # plus the last row (repeated when it starts a chunk: a one-row last part); for hqtr,
+        # adding the qv/ac priors joined them with the priors' ORIGIN_PRIOR_PART_ROWS divisions.
+        n_rows = len(clusters)
+        divisions = [*range(0, n_rows, chunk_size), n_rows - 1]
+        if ( modality == 'hqtr' ):
+            divisions = sorted(set(divisions) | {*range(0, n_rows, ORIGIN_PRIOR_PART_ROWS), n_rows - 1})
+        starts = divisions[:-1]  # part i holds rows divisions[i] up to divisions[i + 1] (the last: to the end)
         beliefs = columns[belief_name]
         timer.stop()
 
@@ -252,8 +262,8 @@ def start_pixel_qc(
 
         print("[NOTE] Writing out data")
         timer.start()
-        helperfuncs.ddf_to_parquet(
-            metrics.image.pixel_score.pixel_frame(columns, divisions), tmp_suffix, spoqc_tmp_folder, [], 'mask_raw')
+        parquet.write_parts(f"{spoqc_tmp_folder}/{tmp_suffix}_output_mask_raw", n_rows,
+                            parquet.columns_of(columns), starts, threads)
         timer.stop()
 
     print("[NOTE] The pixel clustering and prior estimation took:")

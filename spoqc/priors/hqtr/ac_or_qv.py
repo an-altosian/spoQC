@@ -6,6 +6,10 @@ from ...core.threads import map_slices
 # elementwise work runs on slices of this many pixels, one per thread task: 2 MB float64
 # temporaries, measured 2x faster than 4M-pixel slices on a 64 Mpx image
 ROWS_PER_TASK = 1 << 18
+# Rows per part file of the prior parquets. origin/dev wrote 10,000-row parts (91,295 files per
+# prior on a 913 Mpx slide); measured on a 16 Mpx crop on NFS: 1,600 files 2.4 s -> 16 files 0.35 s
+# to write, 3.0 s -> 0.22 s to read, while a part stays 24 MB in memory.
+PART_ROWS = 1_000_000
 
 
 def calc_prob_pixel_stuff_v2(values, figure_path, thresh, std, tail, col, threads):
@@ -15,7 +19,8 @@ def calc_prob_pixel_stuff_v2(values, figure_path, thresh, std, tail, col, thread
     min-max scaled to [0, 1] as dask_ml's MinMaxScaler scales a column (norm_p_{col}).
 
     Returns (norm_p, part_columns): the norm_p_{col} array, and part_columns(start, stop), the
-    columns {col, d_{col}, norm_p_{col}} of pixels start..stop-1 for core.parquet.write_parts.
+    columns {col, norm_p_{col}} (what hqtr clustering and the per-cell analysis read) of pixels
+    start..stop-1 for core.parquet.write_parts.
     Elementwise work runs on slices on `threads` threads; every value is computed exactly as
     it is for the whole array.
     """
@@ -68,7 +73,8 @@ def calc_prob_pixel_stuff_v2(values, figure_path, thresh, std, tail, col, thread
 
     def part_columns(start, stop):
         x = values[start:stop]
-        return {col: x, f"d_{col}": _part(x), f"norm_p_{col}": norm_p[start:stop]}
+        # d_{col} has no reader, so it is no longer written
+        return {col: x, f"norm_p_{col}": norm_p[start:stop]}
 
     helperfuncs.plot_histogram_for_array(
         values,

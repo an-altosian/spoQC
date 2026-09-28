@@ -89,25 +89,22 @@ def combine_priors_hqcr(sdata, figure_path, cell_df, qc_domains_adata, counts, d
     sdata['table'].obs['hqcr_traffic_light'] = traffic_lights
 
 
-# Both return the prior columns and the divisions they add to the pixel frame: combining with
-# a prior on its own partitions splits origin/dev's frame at the union of both divisions.
 def combine_priors_hqpr(norm_p_pixel_score, pixel_score_mask, belief_name, mask_name):
-    return {belief_name: norm_p_pixel_score, mask_name: pixel_score_mask}, []
+    return {belief_name: norm_p_pixel_score, mask_name: pixel_score_mask}
 
 
 def read_pixel_prior(path, column, n_rows):
-    # Read a per-pixel prior written by ddf_to_parquet; its index must be the pixel order 0..n-1.
-    ddf = dd.read_parquet(path, columns=[column], engine="pyarrow", calculate_divisions=True)
-    series = ddf[column].compute()
+    # Read a per-pixel prior written by core.parquet.write_parts; its index must be the pixel order 0..n-1.
+    series = dd.read_parquet(path, columns=[column], engine="pyarrow")[column].compute()
     if not series.index.equals(pd.RangeIndex(n_rows)):
         raise ValueError(f"{path} is not indexed by pixel 0..{n_rows - 1}")
-    return series.to_numpy(), list(ddf.divisions)
+    return series.to_numpy()
 
 
 def combine_priors_hqtr(spoqc_tmp_folder, norm_p_pixel_score, pixel_score_mask, belief_name, mask_name):
     n_rows = len(norm_p_pixel_score)
-    qv, qv_divisions = read_pixel_prior(f"{spoqc_tmp_folder}/hqtr_output_qv_prob", "norm_p_qv_density", n_rows)
-    ac, ac_divisions = read_pixel_prior(f"{spoqc_tmp_folder}/hqtr_output_ac_prob", "norm_p_ac_density", n_rows)
+    qv = read_pixel_prior(f"{spoqc_tmp_folder}/hqtr_output_qv_prob", "norm_p_qv_density", n_rows)
+    ac = read_pixel_prior(f"{spoqc_tmp_folder}/hqtr_output_ac_prob", "norm_p_ac_density", n_rows)
     num_priors = 3.0
     scaled = (norm_p_pixel_score + qv + ac) / num_priors
 
@@ -116,6 +113,6 @@ def combine_priors_hqtr(spoqc_tmp_folder, norm_p_pixel_score, pixel_score_mask, 
         "pixel_score_mask": pixel_score_mask,
         belief_name: scaled,
         mask_name: (scaled > 0.5).astype("int8"),
-    }, qv_divisions + ac_divisions
+    }
 
 # %%

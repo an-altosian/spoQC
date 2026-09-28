@@ -89,7 +89,7 @@ def transcript_qv_image(
         dim_y,
         imagedim,
         *,
-        chunk_size=10000
+        chunk_size=priors.hqtr.ac_or_qv.PART_ROWS
     ):
     figure_path = f'{figure_path}/hqtr/hqtr_qv/'
     timer = helperfuncs.Timer()
@@ -123,4 +123,4 @@ def transcript_qv_image(
         False
     )
 
-    parquet.write_parts(f"{spoqc_tmp_folder}/{modality}_output_qv_prob", len(np_arr), part_columns, chunk_size, threads.budget())
+    parquet.write_parts(f"{spoqc_tmp_folder}/{modality}_output_qv_prob", len(np_arr), part_columns, range(0, len(np_arr), chunk_size), threads.budget())

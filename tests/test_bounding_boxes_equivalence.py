@@ -25,6 +25,7 @@ from skimage.measure import label, regionprops
 from skimage.morphology import dilation, disk
 
 import reference_bounding_boxes_66736f2 as ref
+from legacy.parquet_writer import ddf_to_parquet  # origin/dev's writer, the reference for core.parquet
 from spoqc import helperfuncs
 from spoqc.core import raster
 from spoqc.hqr import combine_masks_zoom
@@ -126,7 +127,7 @@ def test_read_pixel_column_matches_dask_on_a_many_part_directory(tmp_path, dtype
     ddf = dd.from_pandas(
         frame, npartitions=13
     )  # part.10 sorts before part.2 lexicographically
-    helperfuncs.ddf_to_parquet(ddf, "p", str(tmp_path), [], "mask_smoothed_raw")
+    ddf_to_parquet(ddf, "p", str(tmp_path), [], "mask_smoothed_raw")
     path = f"{tmp_path}/p_output_mask_smoothed_raw"
     assert len(os.listdir(path)) >= 13
     expected = (
@@ -281,7 +282,7 @@ def write_mask(tmp, prefix, mask, npartitions):
             f"{prefix}_mask_smoothed": mask.ravel(),
         }
     )
-    helperfuncs.ddf_to_parquet(
+    ddf_to_parquet(
         dd.from_pandas(frame, npartitions=npartitions),
         prefix,
         tmp,

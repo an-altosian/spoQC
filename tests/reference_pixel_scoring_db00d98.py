@@ -19,6 +19,7 @@ import numpy as np
 from dask_ml.preprocessing import MinMaxScaler
 from sklearn.cluster import MiniBatchKMeans
 
+from legacy.parquet_writer import ddf_to_parquet  # origin/dev's writer, the reference for core.parquet
 from spoqc import helperfuncs, priors
 
 def read_data_as_ddf(tmp_files, chunk_size):
@@ -425,7 +426,7 @@ def start_pixel_qc(
 
     print("[NOTE] Writing out data")
     timer.start()
-    helperfuncs.ddf_to_parquet(image_ddf, tmp_suffix, spoqc_tmp_folder, [], 'mask_raw')
+    ddf_to_parquet(image_ddf, tmp_suffix, spoqc_tmp_folder, [], 'mask_raw')
     timer.stop()
 
     print("[NOTE] The pixel clustering and prior estimation took:")

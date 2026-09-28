@@ -19,6 +19,7 @@ from conftest import assert_same_array, load_legacy
 from libpysal.weights import KNN
 from scipy.ndimage import convolve
 
+from legacy.parquet_writer import ddf_to_parquet  # origin/dev's writer, the reference for core.parquet
 from spoqc import helperfuncs
 from spoqc.core import groupreduce, parquet
 from spoqc.metrics.transcript_density import (
@@ -172,7 +173,7 @@ def legacy_prior(values, tmp, col, thresh, std, tail):
         image_ddf, str(tmp), thresh, std, tail, col
     )
     norm_p = image_ddf[f"norm_p_{col}"].compute().to_numpy()
-    helperfuncs.ddf_to_parquet(image_ddf, "hqtr", str(tmp), [], "prior")
+    ddf_to_parquet(image_ddf, "hqtr", str(tmp), [], "prior")
     return norm_p
 
 
@@ -209,13 +210,17 @@ class TestPrior:
             values, str(tmp_path / "new"), thresh, std, tail, "x_density", 3
         )
         assert_same_array(norm_p, expected, "norm_p")
-        parquet.write_parts(
-            str(tmp_path / "new" / "hqtr_output_prior"), n, part_columns, 1000, 3
-        )
-        assert_same_dir(
-            tmp_path / "new" / "hqtr_output_prior",
-            tmp_path / "old" / "hqtr_output_prior",
-        )
+        new_dir = str(tmp_path / "new" / "hqtr_output_prior")
+        parquet.write_parts(new_dir, n, part_columns, range(0, n, 3_000), 3)
+        # the new layout: 3,000-row parts, only the columns readers use; the same values
+        new = dd.read_parquet(new_dir, calculate_divisions=True)
+        old = dd.read_parquet(str(tmp_path / "old" / "hqtr_output_prior")).compute()
+        assert list(new.columns) == ["x_density", "norm_p_x_density"]
+        assert new.divisions == (*range(0, n, 3_000), n - 1)
+        new = new.compute()
+        for column in new.columns:
+            assert_same_array(new[column].to_numpy(), old[column].to_numpy(), column)
+        assert new.index.equals(old.index)
 
     def test_constant_image_scales_by_one(self, tmp_path):
         values = np.zeros(2_500)
@@ -230,7 +235,7 @@ class TestPrior:
         path.mkdir()
         (path / "part.99.parquet").write_bytes(b"stale")
         values = np.arange(10.0)
-        parquet.write_parts(str(path), 10, lambda a, b: {"v": values[a:b]}, 4, 2)
+        parquet.write_parts(str(path), 10, lambda a, b: {"v": values[a:b]}, range(0, 10, 4), 2)
         assert sorted(os.listdir(path)) == [
             "part.0.parquet",
             "part.1.parquet",
@@ -293,8 +298,38 @@ class TestWriteParts:
         names = list(columns)
         ddf = dd.from_dask_array(da.from_array(columns[names[0]], chunks=10_000), columns=[names[0]])
         ddf = ddf.assign(**{k: dd.from_dask_array(da.from_array(columns[k], chunks=10_000)) for k in names[1:]})
-        helperfuncs.ddf_to_parquet(ddf, "hqtr", str(tmp_path), [], "old")
+        ddf_to_parquet(ddf, "hqtr", str(tmp_path), [], "old")
         parquet.write_parts(
-            str(tmp_path / "hqtr_output_new"), n, lambda a, b: {k: v[a:b] for k, v in columns.items()}, 10_000, 3
+            str(tmp_path / "hqtr_output_new"), n, parquet.columns_of(columns), range(0, n, 10_000), 3
         )
         assert_same_dir(tmp_path / "hqtr_output_new", tmp_path / "hqtr_output_old")
+
+
+    @pytest.mark.parametrize("n,n_partitions", [(1_000, 4), (10_001, 2), (30_653, 4), (7, 3), (5, 1)])
+    def test_from_pandas_parts_match_dask(self, tmp_path, n, n_partitions):
+        """The refinement's mask_smoothed_raw: dd.from_pandas(npartitions=...) of in-memory columns."""
+        rng = np.random.default_rng(n)
+        columns = {
+            "hqtr_beliefs": rng.random(n),
+            "hqtr_beliefs_smoothed": rng.random(n).astype(np.float32),
+            "hqtr_mask_smoothed": rng.integers(0, 2, n).astype(np.int8),
+        }
+        ddf = dd.from_pandas(pd.DataFrame(columns), npartitions=n_partitions)
+        starts = parquet.from_pandas_starts(n, n_partitions)
+        assert [*starts, n - 1] == list(ddf.divisions)
+        ddf_to_parquet(ddf, "hqtr", str(tmp_path), [], "old")
+        parquet.write_parts(str(tmp_path / "hqtr_output_new"), n, parquet.columns_of(columns), starts, 2)
+        assert_same_dir(tmp_path / "hqtr_output_new", tmp_path / "hqtr_output_old")
+
+    def test_starts_must_ascend_from_zero(self, tmp_path):
+        with pytest.raises(ValueError, match="ascend"):
+            parquet.write_parts(str(tmp_path / "p"), 10, lambda a, b: {"v": np.zeros(b - a)}, [0, 5, 5], 1)
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_from_pandas_starts_match_dask_divisions(seed):
+    rng = np.random.default_rng(seed)
+    for n, k in zip(rng.integers(1, 5_000, 200), rng.integers(1, 60, 200)):
+        k = int(min(k, n))
+        divisions = dd.from_pandas(pd.DataFrame({"a": np.zeros(int(n))}), npartitions=k).divisions
+        assert [*parquet.from_pandas_starts(int(n), k), int(n) - 1] == list(divisions), (n, k)

@@ -40,6 +40,7 @@ from spoqc.metrics.transcript_density import (  # noqa: E402
 from conftest import assert_same_array, cli_sdata, load_legacy  # noqa: E402
 from test_core_spatial_neighbours import original_points_within_radius  # noqa: E402
 from test_local_moran_weights import assert_knn_weights_equal  # noqa: E402
+from legacy.parquet_writer import ddf_to_parquet  # noqa: E402
 
 DENSITY = "spoqc.metrics.transcript_density"
 PRIORS = "spoqc.priors.hqtr"
@@ -66,6 +67,7 @@ def legacy_modules():
     helperfuncs.points_within_radius = (
         original_points_within_radius  # what origin/dev's local Moran called
     )
+    helperfuncs.ddf_to_parquet = ddf_to_parquet  # what origin/dev's qv/ac steps wrote their priors with
     legacy = {
         name: load_legacy(name, DENSITY)
         for name in (
@@ -84,23 +86,20 @@ def legacy_modules():
     return legacy
 
 
-def assert_same_parquet_dir(new_dir, old_dir):
-    names = sorted(os.listdir(old_dir))
-    assert sorted(os.listdir(new_dir)) == names, (
-        f"{new_dir}: other files than {old_dir}"
-    )
-    for name in names:
-        with open(f"{new_dir}/{name}", "rb") as a, open(f"{old_dir}/{name}", "rb") as b:
-            assert a.read() == b.read(), f"{new_dir}/{name} differs"
-    new, old = (
-        dd.read_parquet(d, engine="pyarrow", calculate_divisions=True)
-        for d in (new_dir, old_dir)
-    )
-    assert new.divisions == old.divisions
+def assert_same_prior_values(new_dir, old_dir):
+    """The prior parquet the step wrote: new layout (larger parts, only the read columns), same values."""
+    new = dd.read_parquet(new_dir, engine="pyarrow", calculate_divisions=True)
+    old = dd.read_parquet(old_dir, engine="pyarrow").compute()
+    assert all(c in old.columns for c in new.columns) and len(new.columns) == 2, list(new.columns)
+    computed = new.compute()
+    assert computed.index.equals(old.index)
+    for column in computed.columns:
+        assert_same_array(computed[column].to_numpy(), old[column].to_numpy(), column)
+    sizes = {d: (len(os.listdir(d)), sum(os.path.getsize(f"{d}/{f}") for f in os.listdir(d))) for d in (old_dir, new_dir)}
     print(
-        f"EXACT MATCH {os.path.basename(new_dir)}: {len(names)} part files byte-identical"
+        f"EXACT MATCH {os.path.basename(new_dir)} values {list(new.columns)}: "
+        f"{sizes[old_dir][0]} files {sizes[old_dir][1] / 1e6:.1f} MB -> {sizes[new_dir][0]} files {sizes[new_dir][1] / 1e6:.1f} MB"
     )
-
 
 def main():
     zarr_path, work = sys.argv[1], sys.argv[2]
@@ -261,7 +260,7 @@ def main():
             f"{work}/new/tmp",
             *step,
         )
-        assert_same_parquet_dir(
+        assert_same_prior_values(
             f"{work}/new/tmp/hqtr_output_{name}_prob",
             f"{work}/old/tmp/hqtr_output_{name}_prob",
         )

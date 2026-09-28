@@ -19,8 +19,10 @@ from dask_ml.preprocessing import MinMaxScaler
 
 import numba
 import reference_pixel_scoring_db00d98 as reference
+from legacy.parquet_writer import ddf_to_parquet  # origin/dev's writer, the reference for core.parquet
 from spoqc import helperfuncs
-from spoqc.core import groupreduce
+from spoqc.core import groupreduce, parquet
+from spoqc.priors.hqtr import ac_or_qv
 from spoqc.image_analysis import pixel_scoring_dask
 from spoqc.metrics.image import pixel_score, utility
 
@@ -238,8 +240,14 @@ def prepare(tmp_path, modality, shape, rng):
         os.symlink(tmp_path / "shared" / metrics_rel, root / "tmp" / metrics_rel)
         if modality == "hqtr":
             for prior, values in priors.items():
-                ddf = dd.from_dask_array(da.from_array(values, chunks=3_001), columns=[f"norm_p_{prior}_density"])
-                helperfuncs.ddf_to_parquet(ddf, "hqtr", str(root / "tmp"), [], f"{prior}_prob")
+                if run == "ref":  # origin/dev's prior layout: 10,000-row parts, which also split its mask_raw
+                    ddf = dd.from_dask_array(
+                        da.from_array(values, chunks=pixel_scoring_dask.ORIGIN_PRIOR_PART_ROWS), columns=[f"norm_p_{prior}_density"])
+                    ddf_to_parquet(ddf, "hqtr", str(root / "tmp"), [], f"{prior}_prob")
+                else:  # the qv/ac steps' layout now
+                    parquet.write_parts(f"{root}/tmp/hqtr_output_{prior}_prob", len(values),
+                                        parquet.columns_of({f"norm_p_{prior}_density": values}),
+                                        range(0, len(values), ac_or_qv.PART_ROWS), 2)
         roots[run] = str(root)
     return roots, arrays, suffix, metrics_rel
 
@@ -274,12 +282,9 @@ def test_start_pixel_qc_is_bit_identical_to_reference(tmp_path, modality, handof
 
 
 @pytest.mark.parametrize("chunk_size", [7_000, 50_000])
-def test_pixel_frame_partitions_match_origin_dev_frame(chunk_size):
-    """The cluster-mean groupby gets exactly origin/dev's partitions (values, dtypes, index).
-
-    The means themselves are not compared: origin/dev's dask groupby-mean (a disk shuffle whose
-    combine order follows task completion) is not deterministic in its last bits, run to run.
-    """
+def test_mask_raw_parts_match_origin_dev_frame(tmp_path, chunk_size):
+    """write_parts at chunk_size starts writes origin/dev's frame's part files (the cluster-mean
+    groupby's partitions), byte for byte."""
     rng = np.random.default_rng(8)
     n = 200_003
     clusters = rng.integers(0, 100, n).astype(np.int32)
@@ -291,14 +296,10 @@ def test_pixel_frame_partitions_match_origin_dev_frame(chunk_size):
     ref_ddf = ref_ddf.assign(cluster=da.from_array(clusters, chunks=chunk_size))
     ref_ddf = ref_ddf.assign(s_score=da.from_array(s_score, chunks=chunk_size), as_score=da.from_array(as_score, chunks=chunk_size))
     ref_ddf = ref_ddf.assign(intensity=da.from_array(intensity, chunks=chunk_size))
-    frame = pixel_score.pixel_frame({'cluster': clusters, 's_score': s_score, 'as_score': as_score, 'intensity': intensity},
-                                    pixel_score.row_divisions(n, chunk_size))
-    assert frame.divisions == ref_ddf.divisions
-    for i in range(ref_ddf.npartitions):
-        expected, got = ref_ddf.partitions[i].compute(), frame.partitions[i].compute()
-        assert got.index.equals(expected.index), i
-        for column in expected.columns:
-            assert bits_equal(got[column].to_numpy(), expected[column].to_numpy()), (i, column)
+    ddf_to_parquet(ref_ddf, "hqpr_0", str(tmp_path), [], "old")
+    columns = {'cluster': clusters, 's_score': s_score, 'as_score': as_score, 'intensity': intensity}
+    parquet.write_parts(f"{tmp_path}/hqpr_0_output_new", n, parquet.columns_of(columns), range(0, n, chunk_size), 3)
+    assert_same_parquet_dir(f"{tmp_path}/hqpr_0_output_old", f"{tmp_path}/hqpr_0_output_new")
 
 
 class TestGroupSum:
