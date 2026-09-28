@@ -173,3 +173,72 @@ def test_low_qc_transcript_count(sdata, monkeypatch):
     assert_same_array(
         sdata["table"].obs["num_low_qc_transcript"], expected, "num_low_qc_transcript"
     )
+
+
+def test_void_rejects_a_stale_doublet_parquet(sdata, tmp_path, monkeypatch):
+    monkeypatch.setattr(go.Figure, "write_image", lambda *args, **kwargs: None)
+    frame = sdata.points["transcripts"].compute()
+    stale = pd.DataFrame(
+        {"doublet": np.zeros(len(frame), bool), "wdoublet": np.zeros(len(frame), int)},
+        index=frame.index + 1,  # same length, monotonic, other rows
+    )
+    helperfuncs.df_to_parquet(stale, "doublet", str(tmp_path), [], "transcripts")
+    with pytest.raises(AssertionError):
+        void.calc_void(sdata, str(tmp_path), str(tmp_path), 1, [])
+
+
+def _write_gtf(path):
+    import gzip
+
+    lines = [
+        f'chr1\tsrc\tgene\t1\t2\t.\t+\t.\tgene_name "{name}"; gene_type "{kind}";'
+        for name, kind in [
+            ("SEC11C", "protein_coding"),
+            ("ACTA2", "protein_coding"),
+            ("KRT7", "lncRNA"),
+        ]
+    ]
+    with gzip.open(path, "wt") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def _capture_plots(monkeypatch):
+    captured = []
+    monkeypatch.setattr(go.Figure, "write_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(go.Figure, "write_html", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        helperfuncs,
+        "plot_scatter_density_by_category_df",
+        lambda df, *a, **k: captured.append(df),
+    )
+    monkeypatch.setattr(
+        helperfuncs, "plot_scatter_density_df", lambda df, *a, **k: captured.append(df)
+    )
+    return captured
+
+
+def test_transcriptqc_uses_the_same_transcripts(sdata, tmp_path, monkeypatch):
+    gtf = tmp_path / "ref.gtf.gz"
+    _write_gtf(gtf)
+    captured = _capture_plots(monkeypatch)
+    load_legacy("qc_transcript", "spoqc.subworkflows").transcriptqc(
+        sdata, str(tmp_path), str(gtf), "transcripts"
+    )
+    n_old = len(captured)
+    qc_transcript.transcriptqc(sdata, str(tmp_path), str(gtf))
+    old, new = captured[:n_old], captured[n_old:]
+    assert len(old) == len(new) == 3
+    for e, g in zip(old, new):
+        for column in ["x", "y", "qv", "cell_id", "location", "feature_type"]:
+            assert_same_array(g[column], e[column], column)
+
+
+def test_transcriptz_uses_the_same_transcripts(sdata, tmp_path, monkeypatch):
+    captured = _capture_plots(monkeypatch)
+    load_legacy("qc_transcript", "spoqc.subworkflows").transcriptz(
+        sdata, str(tmp_path), "transcripts"
+    )
+    qc_transcript.transcriptz(sdata, str(tmp_path))
+    old, new = captured
+    for column in ["x", "y", "z", "sample"]:
+        assert_same_array(new[column], old[column], column)

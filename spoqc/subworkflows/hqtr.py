@@ -78,7 +78,6 @@ def get_hqtr(
             dim_y,
             imagedim,
             seed,
-            CONST.THREADS,
             chunk_size=CONST.PIXEL_QC_CHUNK_SIZE,
             sample_size=CONST.KMEANS_SAMPLE_SIZE,
             thresh_p=thresh_p,

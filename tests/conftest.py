@@ -19,7 +19,6 @@ from spatialdata.models import Image2DModel, PointsModel, ShapesModel, TableMode
 from spatialdata.transformations import Identity, Scale
 
 from spoqc import helperfuncs
-from spoqc.core import transcripts
 
 LEGACY = Path(__file__).parent / "legacy"
 N_CELLS = 150
@@ -152,8 +151,6 @@ def synthetic_zarr(tmp_path_factory) -> Path:
 
 def cli_sdata(path: Path, crop: tuple | None = None) -> sd.SpatialData:
     """Read the zarr and apply the transcript setup of cli.py (origin/dev db00d98, lines 379-430) verbatim."""
-    transcripts._frames.clear()
-    transcripts._global_coordinates.clear()
     sdata = sd.read_zarr(f"{path}")
     sdata.points["transcripts"] = PointsModel.parse(
         helperfuncs.deduplicate_dask_index(sdata.points["transcripts"])

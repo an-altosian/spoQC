@@ -13,7 +13,7 @@ from .. import helperfuncs
 from .. import metrics
 from .. import priors
 
-def dask_clustering_mini_batches(spoqc_tmp_folder, suffix, n_clusters, seed, chunk_size, threads, sample_size=5_000_000):
+def dask_clustering_mini_batches(spoqc_tmp_folder, suffix, n_clusters, seed, chunk_size, sample_size=5_000_000):
     tmp_files = [f'{spoqc_tmp_folder}/{file}' for file in os.listdir(spoqc_tmp_folder)
              if file.endswith(f'{suffix}.parquet')]
 
@@ -67,7 +67,6 @@ def start_pixel_qc(
         dim_y,
         imagedim,
         seed,
-        threads,
         *,
         plot_all_pixel_clusters=False,
         chunk_size=10_000,
@@ -111,7 +110,6 @@ def start_pixel_qc(
         n_clusters,
         seed,
         chunk_size,
-        threads,
         sample_size
     ))
     print("[NOTE] Time for the whole clustering process:")

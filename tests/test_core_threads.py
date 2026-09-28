@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
 import json
+import os
 import subprocess
 import sys
+
+# OpenBLAS caps its pool at the CPU affinity, so stay within it
+N = min(3, len(os.sched_getaffinity(0)))
 
 # Runs the real console entry point, with spoqc.cli replaced by a probe that imports the
 # real cli (and with it polars, numba, numpy, dask, ovrlpy) and reports the pool sizes.
@@ -56,23 +61,50 @@ def _run(*argv: str) -> dict:
 
 
 def test_entry_point_sets_every_pool_to_n():
-    report = _run("-n", "3")
+    report = _run("-n", str(N))
     assert report["imported_before_cli"] == []
     assert report["ovrlpy_imported"]
-    assert report["N"] == 3
-    assert report["polars"] == 3
-    assert report["numba_max"] == 3 and report["numba"] == 3
-    assert report["dask"] == 3
-    assert report["blas"] == [3]
+    assert report["N"] == N
+    assert report["polars"] == N
+    assert report["numba_max"] == N and report["numba"] == N
+    assert report["dask"] == N
+    assert report["blas"] == [N]
     assert report["backend"] == "agg"
-    assert report["cv2"] == 3
-    assert report["blosc"] == 3
-    assert report["arrow_cpu"] == 3 and report["arrow_io"] == 3
-    assert report["zarr"] == 3
+    assert report["cv2"] == N
+    assert report["blosc"] == N
+    assert report["arrow_cpu"] == N and report["arrow_io"] == N
+    assert report["zarr"] == N
 
 
-def test_dev_test_budget_is_eight():
-    assert _run("-n", "3", "--dev_test")["N"] == 8
+def test_dev_test_budget_is_the_named_constant():
+    from spoqc.__main__ import DEV_TEST_THREADS
+
+    assert _run("-n", str(N), "--dev_test")["N"] == DEV_TEST_THREADS
+
+
+def test_cli_main_refuses_to_run_without_configure():
+    code = (
+        "import argparse, spoqc.cli\n"
+        "try:\n"
+        "    spoqc.cli.main(argparse.Namespace())\n"
+        "except RuntimeError as e:\n"
+        "    print('refused:', e)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=600
+    )
+    assert result.returncode == 0, result.stderr
+    assert "refused: spoqc.core.threads.configure(n) has not run" in result.stdout
+
+
+def test_pixel_clustering_takes_no_thread_argument():
+    from spoqc.image_analysis import pixel_scoring_dask
+
+    for fn in (
+        pixel_scoring_dask.dask_clustering_mini_batches,
+        pixel_scoring_dask.start_pixel_qc,
+    ):
+        assert "threads" not in inspect.signature(fn).parameters
 
 
 def test_configure_after_numpy_import_fails():

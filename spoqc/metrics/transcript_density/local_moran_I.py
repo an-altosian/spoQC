@@ -148,8 +148,7 @@ def local_moran_I_per_transcript(sdata, all_ids, all_I):
     # Make sure dtypes match your all_ids / var_names
     transcripts_df = transcripts.load_transcripts(sdata, ['x', 'y', 'cell_id', 'feature_name'])
     transcripts_cell_id = transcripts_df["cell_id"]
-    feature_names = transcripts_df["feature_name"].cat.get_categories().to_list()
-    transcripts_feature = transcripts_df["feature_name"].to_physical().to_numpy()  # codes into feature_names
+    transcripts_feature = transcripts_df["feature_name"].to_physical().to_numpy()  # Enum codes
 
     # Build fast maps -> indices
     cell_to_row = {cid: i for i, cid in enumerate(all_ids)}
@@ -159,7 +158,7 @@ def local_moran_I_per_transcript(sdata, all_ids, all_I):
     cell_rows = transcripts_cell_id.replace_strict(cell_to_row, default=None, return_dtype=pl.Int64)
     valid_cell = cell_rows.is_not_null().to_numpy()
     cell_rows = cell_rows.fill_null(-1).to_numpy()
-    gene_cols = np.array([gene_to_col.get(f, -1) for f in feature_names], dtype=np.int64)[transcripts_feature]
+    gene_cols = transcripts.lookup_by_code(transcripts_df["feature_name"], gene_to_col, -1, np.int64)[transcripts_feature]
 
     # Initialize output
     loca_morans_I_array = np.full(len(transcripts_feature), -1.0, dtype=np.float32)

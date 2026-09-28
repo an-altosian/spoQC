@@ -38,17 +38,13 @@ def generate_transcript_ambient_density_image(
 
     # Attach ambient score to transcript df.
     features = transcripts.load_transcripts(sdata, ['feature_name'])['feature_name']
-    code_of_gene = {gene: code for code, gene in enumerate(features.cat.get_categories())}
     global_ambient.index = [i for i in range(0, len(global_ambient))]
     global_ambient.loc[np.isnan(global_ambient['morans_I']),'morans_I'] = 0.0 # Sometimes you have nan for moran's I.
 
     # I will not check for absolute values because negative autocorrelation might be biological meaningful.
     # Later rows win for a repeated gene; genes absent from the transcripts assign nothing.
-    morans_I_by_code = np.zeros(len(code_of_gene))
-    for i in range(0, len(global_ambient)):
-        gene = global_ambient.loc[i, 'genes']
-        if gene in code_of_gene:
-            morans_I_by_code[code_of_gene[gene]] = global_ambient.loc[i, 'morans_I']
+    morans_I_of_gene = dict(zip(global_ambient['genes'], global_ambient['morans_I']))
+    morans_I_by_code = transcripts.lookup_by_code(features, morans_I_of_gene, 0.0, np.float64)
     xy_transcript_coords_df['morans_I'] = morans_I_by_code[features.to_physical().to_numpy()]
 
     # Now we will add the local morans I

@@ -32,6 +32,18 @@ from spoqc.core import transcripts
 
 # In[]
 def main(args_ns: argparse.Namespace) -> None:
+    """Run spoQC on arguments parsed by `spoqc.cli_args.build_parser()`.
+
+    The entry point is `spoqc.__main__.main(argv)`: it parses argv, calls
+    `spoqc.core.threads.configure` and only then imports this module. `main` itself
+    takes the parsed Namespace (it used to take argv) and refuses to run if the
+    thread budget was never configured.
+    """
+    if threads.N is None:
+        raise RuntimeError(
+            "spoqc.core.threads.configure(n) has not run; start spoQC through "
+            "`spoqc` / `python -m spoqc` or call spoqc.__main__.main(argv)"
+        )
     print("[START]")
 
 # In[]
@@ -435,7 +447,6 @@ def main(args_ns: argparse.Namespace) -> None:
         #     sdata,
         #     figure_path,
         #     f'{CONST.TRANSCRIPT_REFERENCE}',
-        #     'transcripts'
         # )
         subworkflows.qc_transcript.negativeprobeqc(sdata, figure_path)
         print("[finish]")

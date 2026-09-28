@@ -2,8 +2,23 @@
 
 from __future__ import annotations
 
+import gc
+import weakref
+from pathlib import Path
+
+import numpy as np
 import polars as pl
+import pytest
 import spatialdata as sd
+from spatialdata.transformations import (
+    Affine,
+    Identity,
+    MapAxis,
+    Scale,
+    Sequence,
+    Translation,
+    set_transformation,
+)
 from conftest import assert_same_array, cli_sdata
 
 from spoqc.core import transcripts
@@ -97,3 +112,99 @@ def test_cropped_sdata_equals_its_dask_compute(synthetic_zarr):
     got_xyz = transcripts.global_coordinates(cropped).to_pandas()
     for column in expected_xyz.columns:
         assert_same_array(got_xyz[column], expected_xyz[column], column)
+
+
+@pytest.mark.parametrize(
+    "transformation",
+    [
+        Identity(),
+        Translation([3.5, -2.25], axes=("x", "y")),
+        MapAxis({"x": "y", "y": "x", "z": "z"}),
+        Scale([0.3, 7.1, 2.0], axes=("x", "y", "z")),
+    ],
+    ids=lambda t: type(t).__name__,
+)
+def test_global_coordinates_exact_for_elementwise_transformations(
+    sdata, transformation
+):
+    set_transformation(sdata.points["transcripts"], transformation, "global")
+    expected = sd.get_centroids(
+        sdata["transcripts"], coordinate_system="global"
+    ).compute()
+    got = transcripts.global_coordinates(sdata).to_pandas()
+    for column in expected.columns:
+        assert_same_array(got[column], expected[column], column)
+
+
+@pytest.mark.parametrize(
+    "transformation",
+    [
+        Affine(
+            np.array([[0.9, 0.1, 3.0], [-0.2, 1.1, 1.0], [0.0, 0.0, 1.0]]),
+            input_axes=("x", "y"),
+            output_axes=("x", "y"),
+        ),
+        Sequence(
+            [
+                Scale([2.0, 2.0], axes=("x", "y")),
+                Translation([1.0, 1.0], axes=("x", "y")),
+            ]
+        ),
+    ],
+    ids=lambda t: type(t).__name__,
+)
+def test_global_coordinates_refuses_matrix_transformations(sdata, transformation):
+    set_transformation(sdata.points["transcripts"], transformation, "global")
+    with pytest.raises(NotImplementedError, match="bit-identical"):
+        transcripts.global_coordinates(sdata)
+
+
+def test_caches_die_with_their_sdata(synthetic_zarr):
+    sdata = cli_sdata(synthetic_zarr)
+    transcripts.load_transcripts(sdata, ["x"])
+    transcripts.global_coordinates(sdata)
+    ref = weakref.ref(sdata)
+    del sdata
+    gc.collect()
+    assert ref() is None
+    assert (
+        len(transcripts._frames)
+        == len(transcripts._indexes)
+        == len(transcripts._global_coordinates)
+        == 0
+    )
+
+
+def test_transcript_index_is_the_element_index(synthetic_zarr):
+    for crop in (None, (10, 10, 60, 50)):
+        sdata = cli_sdata(synthetic_zarr, crop)
+        expected = sdata.points["transcripts"].index.compute().to_numpy()
+        transcripts.load_transcripts(sdata, ["x"])
+        assert_same_array(
+            transcripts.transcript_index(sdata), expected, f"index, crop={crop}"
+        )
+        fresh = cli_sdata(synthetic_zarr, crop)
+        assert_same_array(
+            transcripts.transcript_index(fresh),
+            expected,
+            f"index without a load, crop={crop}",
+        )
+
+
+def test_lookup_by_code_maps_names_through_enum_codes():
+    feature = pl.Series(["b", "a", "c", "a"], dtype=pl.Enum(["a", "b", "c"]))
+    lut = transcripts.lookup_by_code(feature, {"a": 5, "c": 7, "zz": 9}, -1, np.int64)
+    assert_same_array(lut, np.array([5, -1, 7], dtype=np.int64), "lut")
+    assert_same_array(
+        lut[feature.to_physical().to_numpy()],
+        np.array([-1, 5, 7, 5], dtype=np.int64),
+        "gather",
+    )
+
+
+def test_no_deprecated_polars_category_api():
+    root = Path(transcripts.__file__).parents[1]
+    offenders = [
+        str(p) for p in root.rglob("*.py") if "get_categories" in p.read_text()
+    ]
+    assert offenders == []

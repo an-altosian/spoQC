@@ -46,7 +46,6 @@ def get_hqpr(
             dim_y,
             imagedim,
             seed,
-            CONST.THREADS,
             chunk_size=CONST.PIXEL_QC_CHUNK_SIZE,
             sample_size=CONST.KMEANS_SAMPLE_SIZE,
             staining=CONST.STAINING,

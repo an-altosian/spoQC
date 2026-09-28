@@ -316,8 +316,9 @@ def calc_void(
     if ( doublet_check ):
         print("[NOTE] Load doublet information for void QC")
         tmp_data = pd.read_parquet(f'{spoqc_tmp_folder}/doublet_output_transcripts.parquet')
-        # Both come from the same transcripts in index order, so the index join is positional.
-        assert len(tmp_data) == transcripts_df.height and tmp_data.index.is_monotonic_increasing
+        # Same rows in the same order as the transcripts element, so the index join is positional;
+        # a stale parquet from another run in a reused tmp dir fails here.
+        assert np.array_equal(tmp_data.index.to_numpy(), transcripts.transcript_index(sdata))
         transcripts_df = transcripts_df.hstack(pl.from_pandas(tmp_data))
 
     ###### Count
