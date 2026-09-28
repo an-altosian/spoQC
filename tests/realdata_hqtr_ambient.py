@@ -87,17 +87,22 @@ def legacy_modules():
 
 
 def assert_same_prior_values(new_dir, old_dir):
-    """The prior parquet the step wrote: new layout (larger parts, only the read columns), same values."""
+    """The prior parquet the step wrote: new layout (larger parts, only the read columns); the density
+    exactly, the prior within the merged Gaussian prior's difference."""
     new = dd.read_parquet(new_dir, engine="pyarrow", calculate_divisions=True)
     old = dd.read_parquet(old_dir, engine="pyarrow").compute()
     assert all(c in old.columns for c in new.columns) and len(new.columns) == 2, list(new.columns)
     computed = new.compute()
     assert computed.index.equals(old.index)
-    for column in computed.columns:
-        assert_same_array(computed[column].to_numpy(), old[column].to_numpy(), column)
+    density, norm_p = computed.columns
+    assert_same_array(computed[density].to_numpy(), old[density].to_numpy(), density)
+    # norm_p: the merged Gaussian prior (priors.gaussian) differs from origin/dev in the last bits
+    diff = np.abs(computed[norm_p].to_numpy() - old[norm_p].to_numpy())
+    assert diff.max() <= 16 * np.finfo(np.float64).eps, diff.max()
+    print(f"{norm_p}: {np.count_nonzero(diff):,} of {len(diff):,} pixels differ, max abs {diff.max():.3g}")
     sizes = {d: (len(os.listdir(d)), sum(os.path.getsize(f"{d}/{f}") for f in os.listdir(d))) for d in (old_dir, new_dir)}
     print(
-        f"EXACT MATCH {os.path.basename(new_dir)} values {list(new.columns)}: "
+        f"MATCH {os.path.basename(new_dir)} {list(new.columns)}: "
         f"{sizes[old_dir][0]} files {sizes[old_dir][1] / 1e6:.1f} MB -> {sizes[new_dir][0]} files {sizes[new_dir][1] / 1e6:.1f} MB"
     )
 
@@ -264,7 +269,7 @@ def main():
             f"{work}/new/tmp/hqtr_output_{name}_prob",
             f"{work}/old/tmp/hqtr_output_{name}_prob",
         )
-    print("ALL EXACT")
+    print("ALL MATCH")
 
 
 if __name__ == "__main__":

@@ -209,7 +209,8 @@ class TestPrior:
         norm_p, part_columns = ac_or_qv.calc_prob_pixel_stuff_v2(
             values, str(tmp_path / "new"), thresh, std, tail, "x_density", 3
         )
-        assert_same_array(norm_p, expected, "norm_p")
+        # the merged Gaussian prior (priors.gaussian) differs from origin/dev in the last bits
+        assert np.max(np.abs(norm_p - expected)) <= 16 * np.finfo(np.float64).eps
         new_dir = str(tmp_path / "new" / "hqtr_output_prior")
         parquet.write_parts(new_dir, n, part_columns, range(0, n, 3_000), 3)
         # the new layout: 3,000-row parts, only the columns readers use; the same values
@@ -218,8 +219,8 @@ class TestPrior:
         assert list(new.columns) == ["x_density", "norm_p_x_density"]
         assert new.divisions == (*range(0, n, 3_000), n - 1)
         new = new.compute()
-        for column in new.columns:
-            assert_same_array(new[column].to_numpy(), old[column].to_numpy(), column)
+        assert_same_array(new["x_density"].to_numpy(), old["x_density"].to_numpy(), "x_density")
+        assert_same_array(new["norm_p_x_density"].to_numpy(), norm_p, "norm_p_x_density")
         assert new.index.equals(old.index)
 
     def test_constant_image_scales_by_one(self, tmp_path):

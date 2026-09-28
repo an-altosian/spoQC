@@ -20,7 +20,7 @@ import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import concurrent.futures
 
-from typing import NamedTuple, Dict, List, Union, Tuple, Any, Optional, Sequence
+from typing import NamedTuple, Dict, List, Union, Tuple, Any, Optional
 from anndata import AnnData
 from tqdm import tqdm
 from sklearn.metrics import silhouette_score
@@ -1011,9 +1011,28 @@ def test_resolutions_leiden(
     return win_res
 
 
-def min_max_normalize(array):
-    array = np.array(array)
-    return (array - np.min(array)) / (np.max(array) - np.min(array))
+def min_max_normalize(array, workers=1, out=None):
+    """
+    (x - min) / (max - min), with min and max over the non-NaN values (NaN stays NaN) and a zero
+    range divided by 1, so a constant array scales to 0. Elementwise work runs on `workers`
+    threads; `out` may be `array` itself to scale it in place.
+    """
+    array = np.asarray(array)
+    # slices of at most 2^18 values keep the temporaries small (2 MB of float64)
+    step = max(min(-(-len(array) // workers), 1 << 18), 1)
+    bounds = threads.map_slices(lambda s: (np.nanmin(array[s]), np.nanmax(array[s])), len(array), step, workers)
+    data_min = np.nanmin([b[0] for b in bounds])
+    data_range = np.nanmax([b[1] for b in bounds]) - data_min
+    if data_range == 0:
+        data_range = 1
+    if out is None:
+        out = np.empty(array.shape, dtype=np.true_divide(array[:1] - data_min, data_range).dtype)
+
+    def scale(s):
+        out[s] = (array[s] - data_min) / data_range
+
+    threads.map_slices(scale, len(array), step, workers)
+    return out
 
 
 def get_stuff_from_image_around_coords(pixel_coords, radius, xy_image_feature, imagedim):

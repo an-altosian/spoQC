@@ -71,18 +71,6 @@ def load_intensity_image(sdata, image_type, resolution, staining):
     return np.asarray(sdata[image_type][resolution].image.data[int(staining)])
 
 
-def min_max_normalize(values):
-    # dask_ml MinMaxScaler's arithmetic: scale_ = 1 / range (range 0 -> 1), min_ = 0 - min * scale_,
-    # transform = values * scale_ + min_.
-    data_min = values.min()
-    data_range = values.max() - data_min
-    scale = 1 / (data_range if data_range != 0 else 1)
-    normalized = values * scale
-    normalized += 0 - data_min * scale
-    return normalized
-
-
-# In[]
 def start_pixel_qc(
         sdata,
         figure_path,
@@ -205,7 +193,7 @@ def start_pixel_qc(
         # Min-Max normalization
         print("[NOTE] Min-max normalization")
         timer.start()
-        norm_p_pixel_score = min_max_normalize(p_informative_pixel)
+        norm_p_pixel_score = helperfuncs.min_max_normalize(p_informative_pixel, threads)
         pixel_score_mask = (norm_p_pixel_score > 0.5).astype(int)
         timer.stop()
 

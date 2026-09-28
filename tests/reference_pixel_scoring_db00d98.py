@@ -19,8 +19,12 @@ import numpy as np
 from dask_ml.preprocessing import MinMaxScaler
 from sklearn.cluster import MiniBatchKMeans
 
+from conftest import load_legacy
 from legacy.parquet_writer import ddf_to_parquet  # origin/dev's writer, the reference for core.parquet
 from spoqc import helperfuncs, priors
+
+# origin/dev priors/hqpr/pixel_score.py (since merged into priors.gaussian)
+LEGACY_PIXEL_SCORE_PRIOR = load_legacy("pixel_score_prior", "spoqc.priors.hqpr")
 
 def read_data_as_ddf(tmp_files, chunk_size):
     # Preallocate a Dask Array with correct shape and chunks
@@ -353,7 +357,7 @@ def start_pixel_qc(
     # Based on the pixel_scores of the individual clusters figure out with GMM which clusters correspond to inforamtion.
     # Based on that you can assign a probability to each cluster that they belong to useful information.
     # Based on that you can assign to each pixel the prabolity of the pixel cluster they belong to.
-    prob_densities = priors.hqpr.pixel_score.calc_probs_pixel_score(
+    prob_densities = LEGACY_PIXEL_SCORE_PRIOR.calc_probs_pixel_score(
         np.array(pixel_scores_ds),
         figure_path,
         gmm_mod=3,

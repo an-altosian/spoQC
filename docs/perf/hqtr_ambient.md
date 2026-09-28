@@ -48,3 +48,54 @@ Neither layout was changed; that needs a decision.
 `core/parquet.write_parts` is spoQC's only writer of these per-pixel parquet directories: the qv/ac priors, `mask_raw` (`pixel_scoring_dask`) and `mask_smoothed_raw` (`pixel_scoring_refinement`).
 For a given part layout it writes the bytes dask's `to_parquet` wrote, including NaN written as null.
 `helperfuncs.ddf_to_parquet` is deleted; its verbatim copy in `tests/legacy/parquet_writer.py` is the reference in the tests.
+
+## 2. One Gaussian prior (duplicates #18): `priors/gaussian.py`
+
+**origin/dev:** four copies of "score values by a normal density, then min-max scale":
+
+| Copy | Density | Tail / peak | Min-max |
+| --- | --- | --- | --- |
+| `priors/hqcr/negative_probe_counts.calc_probs` (per cell) | `scipy.stats.norm.pdf` | right tail set to `np.max(pdf)`, then `np.max(pdf) - pdf` | `(x - min) / (max - min)` |
+| `priors/hqcr/doublet_distance.calc_probs_doublet_distance` (per cell) | `norm.pdf` | none | `(x - min) / (max - min)`, skipped when there are no doublets |
+| `priors/hqpr/pixel_score.calc_probs_pixel_score` (hqpr and hqtr, per pixel cluster) | `norm.pdf` | none | dask_ml MinMaxScaler over the pixels: `x * (1 / range) + (0 - min / range)` |
+| `priors/hqtr/ac_or_qv.calc_prob_pixel_stuff_v2` (qv/ac, per pixel) | by hand: `inv_std / sqrt(2 pi) * exp(-0.5 z^2)` | left tail set to that constant, then constant `- pdf` | dask_ml MinMaxScaler |
+
+The GMM fit of the negative-probe and pixel-score copies was the same code twice.
+
+**Now:** `priors/gaussian.py` holds the GMM parameter choice (`gmm_parameters`) and the density (`gaussian_density`), and `helperfuncs.min_max_normalize` is the one min-max (threaded, `out=` for in place). All four callers use them. `pixel_scoring_dask.min_max_normalize` and every `dask_ml` import are deleted.
+
+The formulation, the most correct of the four:
+- **Density:** `scipy.stats.norm.pdf`, the library implementation, rather than the formula typed out by hand.
+- **Peak:** `norm.pdf(mean)`, the density's true maximum. `np.max(pdf)` over the values is below the peak whenever no value sits exactly at the mean. For the negative probes it then made the tail cells and the cells as far below the mean equally "worst": with no cell at exactly t = 1 probe, every prior was 0 and min-max gave 0 / 0 = NaN for every cell (`tests/test_gaussian_prior.py`).
+- **Min-max:** `(x - min) / (max - min)`: one rounding, and exactly 0 and 1 at the extremes. MinMaxScaler's `x * (1 / range) + (0 - min / range)` has three roundings. A zero range now scales to 0 (MinMaxScaler's rule) instead of 0 / 0 = NaN, and NaN values are skipped.
+- **GMM:** the mixture is still fitted where origin/dev fitted it, even when `t` and `std` override its result (negative probes). Its k-means initialisation draws from numpy's global random state, so dropping a fit would change every later GMM fit in the run. The pixel-score parameters and the global random state after the fit are identical (tested).
+
+**Difference on the crop**, on the real inputs of an origin/dev-equivalent run (`2fe97e2`), each prior computed both ways:
+
+| Prior | Values differing | Max abs diff | Max rel diff |
+| --- | --- | --- | --- |
+| Negative probes (A, cells) | 0 of 2,222 (325 cells have exactly t = 1 probe, so `np.max(pdf)` was the true peak) | 0 | 0 |
+| Doublet distance (D, cells) | 0 of 2,222 | 0 | 0 |
+| hqpr pixel score, `norm_p` (B, pixels) | 8,700,228 of 16,000,000 | 1.1e-16 | 2.9e-16 |
+| hqtr pixel score, `norm_p` (B, pixels) | 6,352,763 of 16,000,000 | 1.1e-16 | 3.1e-16 |
+| qv prior, `norm_p_qv_density` (C, pixels) | 355,579 of 16,000,000 | 3.3e-16 | 2.6e-4 (at values near 1e-12) |
+| ac prior, `norm_p_ac_density` (C, pixels) | 430,040 of 16,000,000 | 2.2e-16 | 7.6e-6 |
+
+**Downstream, end to end:** the crop was run step by step through the CLI (bubbleqc, doubletqc, voidqc, cellqc, generalqc, hqcr_ident, hqpr_metrices .. hqpr_bounding_box, ambientqc, hqtr_metrices .. hqtr_bounding_box) three times: twice with `2fe97e2` and once with the merge.
+The two `2fe97e2` runs gave identical outputs, all 95 parquet columns, so every difference below comes from the merge.
+
+| Output | Differs from origin/dev |
+| --- | --- |
+| GMM thresholds (mean, std) of the hqpr and hqtr pixel priors and of the negative probes | identical |
+| hqcr: `hqcr_beliefs`, `hqcr_mask`, smoothed beliefs and mask, `hqcr_traffic_light`, `hqcr.json` | identical |
+| `hqpr_0_beliefs` (mask_raw and mask_smoothed_raw) | 8,700,228 pixels, max abs 1.1e-16 |
+| `hqpr_0_mask` | 0 pixels |
+| hqtr `norm_p_pixel_score` (mask_raw) | 6,352,763 pixels, max abs 1.1e-16 |
+| `norm_p_qv_density`, `norm_p_ac_density` (prior parquets) | 355,579 and 430,040 pixels, max abs 3.3e-16 |
+| `hqtr_beliefs` (mask_raw and mask_smoothed_raw) | 4,516,210 pixels, max abs 2.2e-16 |
+| `hqtr_mask`, `pixel_score_mask` | 0 pixels |
+| MRF-refined `*_beliefs_smoothed`, `*_mask_smoothed` (hqpr and hqtr) | 0 pixels |
+| Bounding boxes (`hqprs_0.txt`, `hqtrs.txt`) | identical |
+| Every other parquet column (88 of 95) | identical |
+
+Tests: `tests/test_gaussian_prior.py` (each copy vs its verbatim origin/dev module in `tests/legacy/`), `tests/test_pixel_scoring_differential.py` (mask_raw vs the origin/dev pipeline: only the prior-derived columns differ, within 2 ULP of 1, and masks flip only at beliefs within 2 ULP of 0.5).
