@@ -27,6 +27,7 @@ def get_hqpr(
             dim_x,
             dim_y,
             CONST.OVERWRITE,
+            CONST.THREADS,
             staining=CONST.STAINING,
         )
 

@@ -12,9 +12,12 @@ from types import SimpleNamespace
 
 import cv2
 import dask.array as da
+import dask.dataframe as dd
 import numpy as np
+import pandas as pd
 import pyarrow.parquet as pq
 import pytest
+import xarray as xr
 from skimage.feature import local_binary_pattern
 
 import reference_pixel_metrics_fca01f5 as reference
@@ -27,6 +30,7 @@ IMAGE_TYPE, RESOLUTION = "morphology_focus", "s0"
 SHAPES = [(1, 9), (9, 1), (2, 3), (5, 5), (7, 4), (4, 9), (37, 23), (1030, 517)]
 HQPR_KINDS = ["tissue", "full_range", "constant", "edges"]
 HQTR_KINDS = ["density", "zeros"]
+THREADS = 2  # the new code's thread budget (raster.load_intensity_image)
 
 
 def make_image(kind, shape, rng):
@@ -67,15 +71,19 @@ class FakeSdata(dict):
             {
                 IMAGE_TYPE: {
                     RESOLUTION: SimpleNamespace(
-                        image=SimpleNamespace(
-                            values=image3d,
-                            data=da.from_array(image3d, chunks=(1, 256, 256)),
+                        image=xr.DataArray(
+                            da.from_array(image3d, chunks=(1, 256, 256)), dims=("c", "y", "x")
                         )
                     )
                 }
             }
         )
-        self.points = {"transcripts": SimpleNamespace(compute=lambda: None)}
+        # A few transcripts for the (patched-out) transcript point plot: core.transcripts reads them
+        # through sdata.points and caches them keyed weakly by this object.
+        points = pd.DataFrame({"x": [0.5, 1.5], "y": [0.5, 2.5]})
+        self.points = {"transcripts": dd.from_pandas(points, npartitions=1)}
+
+    __hash__ = object.__hash__  # identity, as for a SpatialData object
 
 
 def record_calls(monkeypatch, density=None):
@@ -122,7 +130,7 @@ def record_calls(monkeypatch, density=None):
     return calls
 
 
-def run(func, base, image, modality, monkeypatch, **kwargs):
+def run(func, base, image, modality, monkeypatch, *extra, **kwargs):
     """Run one start_image_struc_analyis; return (plot calls, {file: parquet table}, figure files)."""
     staining = "0" if modality == "hqpr" else None
     metrices = (
@@ -141,7 +149,7 @@ def run(func, base, image, modality, monkeypatch, **kwargs):
     dim_x, dim_y = image.shape
     func(
         FakeSdata(image), f"{base}/fig", f"{base}/tmp", modality, IMAGE_TYPE, RESOLUTION,
-        None, dim_x, dim_y, True, **kwargs, **({"staining": staining} if staining else {}),
+        None, dim_x, dim_y, True, *extra, **kwargs, **({"staining": staining} if staining else {}),
     )  # fmt: skip
     tables = {f: pq.read_table(f"{metrices}/{f}") for f in sorted(os.listdir(metrices))}
     calls = [
@@ -193,7 +201,7 @@ def _compare(image, modality, tmp_path, monkeypatch):
         monkeypatch,
     )
     monkeypatch.undo()
-    new = run(structure_analysis.start_image_struc_analyis, f"{tmp_path}/new", image, modality, monkeypatch)
+    new = run(structure_analysis.start_image_struc_analyis, f"{tmp_path}/new", image, modality, monkeypatch, THREADS)
     assert_same_calls(new[0], old[0])
     assert_same_tables(new[1], old[1])
     assert new[2] == old[2]

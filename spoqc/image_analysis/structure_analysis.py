@@ -4,7 +4,7 @@ import numpy as np
 
 from .. import helperfuncs
 from .. import metrics
-from ..core import transcripts
+from ..core import raster, transcripts
 from ..metrics.image import pixel_metrics
 from ._slidingwindow import texture_metrics
 
@@ -19,6 +19,7 @@ def start_image_struc_analyis(
         dim_x,
         dim_y,
         overwrite,
+        threads,
         *,
         staining=None
 ):
@@ -68,8 +69,9 @@ def start_image_struc_analyis(
         helperfuncs.nparr_to_parquet(intensities, 'transcript_density', spoqc_tmp_folder, tmp_suffix)
         texture_intensities = xy_intensities
     else:
-        xy_intensities = sdata[image_type][resolution].image.values[int(staining)]
-        xy_intensities = np.flipud(xy_intensities)
+        xy_intensities = raster.load_intensity_image(
+            sdata, spoqc_tmp_folder, modality, image_type, resolution, dim_x, dim_y, threads, staining=staining
+        )
 
         n_bins = 256
         texture_intensities = np.floor(
