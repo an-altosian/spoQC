@@ -27,7 +27,7 @@ METRIC_DTYPES = [np.float64, np.float64, np.float64, np.float64, np.uint8, np.fl
 
 
 def bits_equal(a, b):
-    a, b = np.atleast_1d(np.asarray(a)), np.atleast_1d(np.asarray(b))
+    a, b = np.ascontiguousarray(np.atleast_1d(a)), np.ascontiguousarray(np.atleast_1d(b))
     return a.dtype == b.dtype and a.shape == b.shape and np.array_equal(a.view(np.uint8), b.view(np.uint8))
 
 
@@ -211,3 +211,31 @@ def test_start_pixel_qc_is_bit_identical_to_reference(tmp_path, modality, handof
     assert helperfuncs.PIXEL_FEATURES == {}
     labels = pq.read_table(f"{roots['new']}/tmp/{prefix}_output_mask_raw").column("cluster").to_numpy()
     assert len(np.unique(labels)) > 10  # the clustering is not degenerate
+
+
+@pytest.mark.parametrize("chunk_size", [7_000, 50_000])
+def test_pixel_frame_partitions_match_origin_dev_frame(chunk_size):
+    """The cluster-mean groupby gets exactly origin/dev's partitions (values, dtypes, index).
+
+    The means themselves are not compared: origin/dev's dask groupby-mean (a disk shuffle whose
+    combine order follows task completion) is not deterministic in its last bits, run to run.
+    """
+    rng = np.random.default_rng(8)
+    n = 200_003
+    clusters = rng.integers(0, 100, n).astype(np.int32)
+    s_score = rng.gamma(2.0, 50.0, n).astype(np.float32)
+    as_score = rng.standard_normal(n).astype(np.float32)
+    intensity = rng.integers(0, 65536, n).astype(np.uint16)
+    # origin/dev's frame: zeros from_dask_array, then the columns assigned as chunk_size dask arrays.
+    ref_ddf = dd.from_dask_array(da.zeros(n, chunks=chunk_size), columns=['cluster'])
+    ref_ddf = ref_ddf.assign(cluster=da.from_array(clusters, chunks=chunk_size))
+    ref_ddf = ref_ddf.assign(s_score=da.from_array(s_score, chunks=chunk_size), as_score=da.from_array(as_score, chunks=chunk_size))
+    ref_ddf = ref_ddf.assign(intensity=da.from_array(intensity, chunks=chunk_size))
+    frame = pixel_score.pixel_frame({'cluster': clusters, 's_score': s_score, 'as_score': as_score, 'intensity': intensity},
+                                    pixel_score.row_divisions(n, chunk_size))
+    assert frame.divisions == ref_ddf.divisions
+    for i in range(ref_ddf.npartitions):
+        expected, got = ref_ddf.partitions[i].compute(), frame.partitions[i].compute()
+        assert got.index.equals(expected.index), i
+        for column in expected.columns:
+            assert bits_equal(got[column].to_numpy(), expected[column].to_numpy()), (i, column)
