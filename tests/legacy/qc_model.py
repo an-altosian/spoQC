@@ -1,6 +1,4 @@
 #In[]
-from concurrent.futures import ThreadPoolExecutor
-
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -8,13 +6,13 @@ import seaborn as sns
 import plotly.graph_objects as go
 import geopandas as gpd
 import scanpy as sc
+import shutil
 
 from plotly.subplots import make_subplots
 from esda.moran import Moran
 from libpysal.weights import Queen
 
 from .. import helperfuncs
-from spoqc.core.figures import save_figure
 
 
 
@@ -43,7 +41,8 @@ def plot_pca_scatter(df, figure_path, nPCs, flip=False):
         plt.legend(bbox_to_anchor=(1.15, 1), loc='upper left', borderaxespad=0., markerscale=1)
 
     plt.tight_layout()
-    save_figure(plt.gcf(), f'{figure_path}/scatterplot_PCs.png', f'{figure_path}/scatterplot_PCs.pdf', bbox_inches='tight')
+    plt.savefig(f'{figure_path}/scatterplot_PCs.png', bbox_inches='tight')
+    plt.savefig(f'{figure_path}/scatterplot_PCs.pdf', bbox_inches='tight')
     plt.close()
 
     # Individual PC plots
@@ -67,68 +66,38 @@ def plot_pca_scatter(df, figure_path, nPCs, flip=False):
         plt.legend(bbox_to_anchor=(1.15, 1), loc='upper left', borderaxespad=0., markerscale=1)
 
         plt.tight_layout()
-        save_figure(plt.gcf(), f'{figure_path}/scatterplot_PC{i+1}.png', f'{figure_path}/scatterplot_PC{i+1}.pdf', bbox_inches='tight')
+        plt.savefig(f'{figure_path}/scatterplot_PC{i+1}.png', bbox_inches='tight')
+        plt.savefig(f'{figure_path}/scatterplot_PC{i+1}.pdf', bbox_inches='tight')
         plt.close()
 
 
-_PERMUTATION_CHUNK = 64  # permutations per pool task (64 x 167,780 int64 = 86 MB)
-
-
-def _permuted_I(z, weights, scale, z2ss, perms):
-    """esda Moran.__calc for each permutation: n / s0 * (z (W z)).sum() / z2ss, in esda's order."""
-    out = np.empty(len(perms))
-    for k, perm in enumerate(perms):
-        zp = z[perm]  # == np.random.permutation(z) for the same RNG draw
-        zl = weights * zp  # libpysal lag_spatial: w.sparse * y
-        out[k] = scale * (zp * zl).sum() / z2ss
-    return out
-
-
-def moran_I_and_sim_variance(y, w, permutations, pool, threads):
-    """Moran's I and the permutation variance VI_sim of esda's Moran(y, w, permutations).
-
-    Bit-identical to esda 2.10: esda's own code computes I and the moments; the
-    permutations are the same global-RNG draws in esda's order (np.random.permutation(n)
-    shuffles exactly like np.random.permutation(z)), drawn serially on this thread (the
-    shuffle releases the GIL) while the pool evaluates the chunks already drawn.
-    """
-    moran = Moran(y, w, permutations=0)  # transforms w to 'r' in place, as esda does
-    y = np.asarray(y).flatten()
-    z = y - y.mean()  # esda's z (moran.z is rescaled by y.std() before returning)
-    scale = moran.n / moran.w.s0  # esda: self.n / s0 * inum / self.z2ss, left to right
-    weights = moran.w.sparse
-    in_flight = []
-    for start in range(0, permutations, _PERMUTATION_CHUNK):
-        # at most 2 chunks per thread waiting: bounds the drawn-but-unevaluated permutations
-        pending = [f for f in in_flight if not f.done()]
-        if len(pending) >= 2 * threads:
-            pending[0].result()
-        perms = [np.random.permutation(moran.n) for _ in range(min(_PERMUTATION_CHUNK, permutations - start))]
-        in_flight.append(pool.submit(_permuted_I, z, weights, scale, moran.z2ss, perms))
-    sim = np.concatenate([f.result() for f in in_flight])
-    return moran.I, np.array(sim).std() ** 2  # esda: seI_sim = sim.std(); VI_sim = seI_sim**2
-
-
-def plot_spatial_vs_exression_variance(sdata, figure_path, df, nPCs, threads):
+def plot_spatial_vs_exression_variance(sdata, figure_path, df, nPCs):
 
     moran_variances = [-1] * nPCs
     moran_Is = [-1] * nPCs
 
     rna_adata = sdata['table']
 
-    # Convert to GeoDataFrame which is needed to take sparsity of spatial data into account.
-    gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.x, df.y))
+    for i in range(0, nPCs):
 
-    # Create spatial-neighbor weights using queen contiguity. The points are the same for
-    # every PC, so the weights are built once (origin/dev rebuilt identical weights per PC).
-    w = Queen.from_dataframe(gdf)
+        # Convert to GeoDataFrame which is needed to take sparsity of spatial data into account.
+        gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.x, df.y))
 
-    with ThreadPoolExecutor(threads) as pool:
-        for i in range(0, nPCs):
-            # Calculate Moran's I with spatial weights.
-            # P-value of 0.01 with 99 permutations is not necessarily more significant than a result with 
-            # a p-value of 0.001 with 999 permutations. Is is recommended to do 999 permutation. 9999 for more precision.
-            moran_Is[i], moran_variances[i] = moran_I_and_sim_variance(df['PC' + str(i)], w, 999, pool, threads)
+        # Create spatial-neighbor weights using queen contiguity
+        w = Queen.from_dataframe(gdf)
+
+        # Calculate Moran's I with spatial weights.
+        # P-value of 0.01 with 99 permutations is not necessarily more significant than a result with 
+        # a p-value of 0.001 with 999 permutations. Is is recommended to do 999 permutation. 9999 for more precision.
+        moran = Moran(df['PC' + str(i)], w, permutations=999)
+
+        # p_norm = This is the p-value based on the assumption that the statistic follows a normal distribution.
+        # p_sim = This is the p-value based on the permutation test, which is a non-parametric method.
+        # print(f"Moran's I: {moran.I}")
+        # print(f"p-value: {moran.p_sim}")
+        # print(f"Variance: {moran.VI_sim}")
+        moran_variances[i] = moran.VI_sim
+        moran_Is[i] = moran.I
 
 
     data = pd.DataFrame({
@@ -169,7 +138,8 @@ def plot_spatial_vs_exression_variance(sdata, figure_path, df, nPCs, threads):
     helperfuncs.apply_general_plotly_layout(fig, True)
 
     fig.write_html(f"{figure_path}/pca_evaluation_spatial_variance.html")
-    save_figure(fig, f"{figure_path}/pca_evaluation_spatial_variance.png", f"{figure_path}/pca_evaluation_spatial_variance.pdf", scale=3)
+    fig.write_image(f"{figure_path}/pca_evaluation_spatial_variance.png", scale=3)
+    fig.write_image(f"{figure_path}/pca_evaluation_spatial_variance.pdf", scale=3)
 
     # Create a subplot with secondary y-axis
     fig = make_subplots(specs=[[{"secondary_y": True}]])
@@ -200,7 +170,8 @@ def plot_spatial_vs_exression_variance(sdata, figure_path, df, nPCs, threads):
     helperfuncs.apply_general_plotly_layout(fig, True)
 
     fig.write_html(f"{figure_path}/pca_evaluation_moransi.html")
-    save_figure(fig, f"{figure_path}/pca_evaluation_moransi.png", f"{figure_path}/pca_evaluation_moransi.pdf", scale=3)
+    fig.write_image(f"{figure_path}/pca_evaluation_moransi.png", scale=3)
+    fig.write_image(f"{figure_path}/pca_evaluation_moransi.pdf", scale=3)
 
 
 def run_qc_model(sdata, figure_path, CONST):
@@ -226,10 +197,10 @@ def run_qc_model(sdata, figure_path, CONST):
     for i in range(0, npcs):
         df[f'PC{i}'] = X_pca[:,i]
 
-    sc.pl.pca_variance_ratio(rna_adata, n_pcs=n_comps, log=True, show=False)
-    save_figure(plt.gcf(), f"{figure_path}/pca_variance_ratio.png", f"{figure_path}/pca_variance_ratio.pdf",
-                bbox_inches="tight")  # as scanpy's save= wrote them (dpi from rcParams)
-    plt.close()
+    sc.pl.pca_variance_ratio(rna_adata, n_pcs=n_comps, log=True, save='.png')
+    shutil.move("figures/pca_variance_ratio.png", f"{figure_path}/pca_variance_ratio.png")
+    sc.pl.pca_variance_ratio(rna_adata, n_pcs=n_comps, log=True, save='.pdf')
+    shutil.move("figures/pca_variance_ratio.pdf", f"{figure_path}/pca_variance_ratio.pdf")
 
     plot_pca_scatter(df, figure_path, npcs)
-    plot_spatial_vs_exression_variance(sdata, figure_path, df, npcs, CONST.THREADS)
+    plot_spatial_vs_exression_variance(sdata, figure_path, df, npcs)
