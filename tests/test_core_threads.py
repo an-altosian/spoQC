@@ -103,3 +103,13 @@ def test_configure_after_numpy_import_fails():
     )
     assert result.returncode != 0
     assert "must run before importing ['numpy']" in result.stderr
+
+
+def test_budget_raises_before_configure(monkeypatch):
+    from spoqc.core import threads
+
+    monkeypatch.setattr(threads, "N", None)
+    import pytest
+
+    with pytest.raises(RuntimeError, match="configure"):
+        threads.budget()

@@ -44,7 +44,7 @@ def generate_transcript_quality_density_image(
 
     print("[NOTE] Densitiy calculation")
     timer.start()
-    xy_kernel_transcript_density = transcript_density_image.disk_density(xy_transcript_density, kernel_radius, threads.N)
+    xy_kernel_transcript_density = transcript_density_image.disk_density(xy_transcript_density, kernel_radius, threads.budget())
     del transcript_density_list, xy_transcript_density
     timer.stop()
     #xy_kernel_transcript_density = xy_kernel_transcript_density.astype(np.uint16) # conversion needed for cv2
@@ -108,7 +108,7 @@ def transcript_qv_image(
     print("[NOTE] Calculate qv probabilities")
     timer.start()
     norm_p, part_columns = priors.hqtr.ac_or_qv.calc_prob_pixel_stuff_v2(
-        np_arr, figure_path, 20.0, 3, 'left', 'qv_density', threads.N
+        np_arr, figure_path, 20.0, 3, 'left', 'qv_density', threads.budget()
     )
     timer.stop()
 
@@ -123,4 +123,4 @@ def transcript_qv_image(
         False
     )
 
-    parquet.write_parts(f"{spoqc_tmp_folder}/{modality}_output_qv_prob", len(np_arr), part_columns, chunk_size, threads.N)
+    parquet.write_parts(f"{spoqc_tmp_folder}/{modality}_output_qv_prob", len(np_arr), part_columns, chunk_size, threads.budget())

@@ -59,6 +59,13 @@ def configure(n: int) -> None:
     N = n
 
 
+def budget() -> int:
+    """N, for code without a threads argument; raises if configure() never ran."""
+    if N is None:
+        raise RuntimeError("spoqc.core.threads.configure(n) has not run, so there is no thread budget")
+    return N
+
+
 def map_slices(fn, n: int, step: int, workers: int) -> list:
     """[fn(s) for s in slice(0, step), slice(step, 2 * step), ... up to n], run on `workers` threads.
 

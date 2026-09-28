@@ -76,7 +76,7 @@ def generate_transcript_density_image(
 
     print("[NOTE] Densitiy calculation")
     timer.start()
-    xy_kernel_transcript_density = disk_density(xy_transcript_density, kernel_radius, threads.N)
+    xy_kernel_transcript_density = disk_density(xy_transcript_density, kernel_radius, threads.budget())
     del transcript_density_list, xy_transcript_density
     timer.stop()
     # xy_kernel_transcript_density = xy_kernel_transcript_density.astype(np.uint16) # conversion needed for cv2
