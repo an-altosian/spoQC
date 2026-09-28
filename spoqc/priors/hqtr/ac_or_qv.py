@@ -1,12 +1,10 @@
-from concurrent.futures import ThreadPoolExecutor
-
 import numpy as np
 
 from ... import helperfuncs
+from ...core.threads import map_slices
 
-ROWS_PER_TASK = (
-    1 << 22
-)  # elementwise work runs on slices of this many pixels, one per thread task
+# elementwise work runs on slices of this many pixels, one per thread task
+ROWS_PER_TASK = 1 << 22
 
 
 def calc_prob_pixel_stuff_v2(values, figure_path, thresh, std, tail, col, threads):
@@ -51,25 +49,21 @@ def calc_prob_pixel_stuff_v2(values, figure_path, thresh, std, tail, col, thread
         d = _part(values[s])
         return np.nanmin(d), np.nanmax(d)
 
-    slices = [
-        slice(start, start + ROWS_PER_TASK)
-        for start in range(0, len(values), ROWS_PER_TASK)
-    ]
+    # Min-Max normalize as dask_ml's MinMaxScaler (feature_range (0, 1)): min and max skip NaN,
+    # a zero range scales by 1, and x * scale + min_.
+    slice_bounds = map_slices(bounds, len(values), ROWS_PER_TASK, threads)
+    data_min = np.nanmin([b[0] for b in slice_bounds])
+    data_max = np.nanmax([b[1] for b in slice_bounds])
+    data_range = data_max - data_min
+    scale = (1 - 0) / (data_range if data_range != 0 else np.float64(1))
+    min_ = 0 - data_min * scale
+
     norm_p = np.empty(len(values), dtype=np.float64)
-    with ThreadPoolExecutor(threads) as executor:
-        # Min-Max normalize as dask_ml's MinMaxScaler (feature_range (0, 1)): min and max skip NaN,
-        # a zero range scales by 1, and x * scale + min_.
-        slice_bounds = list(executor.map(bounds, slices))
-        data_min = np.nanmin([b[0] for b in slice_bounds])
-        data_max = np.nanmax([b[1] for b in slice_bounds])
-        data_range = data_max - data_min
-        scale = (1 - 0) / (data_range if data_range != 0 else np.float64(1))
-        min_ = 0 - data_min * scale
 
-        def scale_slice(s):
-            norm_p[s] = _part(values[s]) * scale + min_
+    def scale_slice(s):
+        norm_p[s] = _part(values[s]) * scale + min_
 
-        list(executor.map(scale_slice, slices))
+    map_slices(scale_slice, len(values), ROWS_PER_TASK, threads)
 
     def part_columns(start, stop):
         x = values[start:stop]

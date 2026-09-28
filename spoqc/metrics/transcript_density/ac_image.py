@@ -2,13 +2,16 @@ import spatialdata as sd
 import numpy as np
 import pandas as pd
 
-from scipy.ndimage import convolve
-
 from ... import helperfuncs
 from ... import priors
 from . import local_moran_I
 from . import transcript_density_image
 from ...core import groupreduce, parquet, transcripts
+from ...core.threads import map_rows
+
+
+def _log10_1p(image, workers):
+    return map_rows(lambda x: np.log10(x + 1), (image,), workers)
 
 # We are calculating a kernel density at the end so you will not have your usual [-1,1] autocorraltion values.
 def generate_transcript_ambient_density_image(
@@ -55,25 +58,21 @@ def generate_transcript_ambient_density_image(
     )
     timer.stop()
 
-    xy_transcript_density = np.array(transcript_density_list).reshape(dim_x, dim_y)
+    xy_transcript_density = transcript_density_list.reshape(dim_x, dim_y)
 
     img_extent = sd.get_extent(sdata[image_type], coordinate_system='global')
     imagedim = helperfuncs.ImageDimStruct(img_extent['x'][0], img_extent['y'][0],
                                         img_extent['x'][1], img_extent['y'][1])
     nuclei_centroid_coords = sd.get_centroids(sdata['nucleus_boundaries'], coordinate_system='global').compute()
 
-    # Create circular kernel (disk mask)
-    y, x = np.ogrid[-kernel_radius:kernel_radius+1, -kernel_radius:kernel_radius+1]
-    mask = (x**2 + y**2) <= kernel_radius**2
-    kernel = mask.astype(xy_transcript_density.dtype)
-    xy_kernel_transcript_density = convolve(xy_transcript_density, kernel, mode='constant', cval=0)
-    xy_kernel_transcript_density = np.flipud(xy_kernel_transcript_density)
+    xy_kernel_transcript_density = transcript_density_image.disk_density(xy_transcript_density, kernel_radius, threads)
+    del transcript_density_list, xy_transcript_density  # free the grid before the next one
     # xy_kernel_transcript_density = xy_kernel_transcript_density.astype(np.uint16) # conversion needed for cv2
 
     if ( figure_path != None ):
         helperfuncs.plot_pixels(
             figure_path,
-            np.log10(xy_kernel_transcript_density + 1),
+            _log10_1p(xy_kernel_transcript_density, threads),
             imagedim,
             'transcript_global_autocorrelation_density',
             'Transcript Global Autocorrelation Density (Potential)', 
@@ -91,17 +90,15 @@ def generate_transcript_ambient_density_image(
     )
     timer.stop()
 
-    local_xy_transcript_density = np.array(local_transcript_density_list).reshape(dim_x, dim_y)
+    local_xy_transcript_density = local_transcript_density_list.reshape(dim_x, dim_y)
 
-    # Create circular kernel (disk mask)
-    kernel = mask.astype(local_xy_transcript_density.dtype)
-    local_xy_kernel_transcript_density = convolve(local_xy_transcript_density, kernel, mode='constant', cval=0)
-    local_xy_kernel_transcript_density = np.flipud(local_xy_kernel_transcript_density)
+    local_xy_kernel_transcript_density = transcript_density_image.disk_density(local_xy_transcript_density, kernel_radius, threads)
+    del local_transcript_density_list, local_xy_transcript_density
 
     if ( figure_path != None ):
         helperfuncs.plot_pixels(
             figure_path,
-            np.log10(local_xy_kernel_transcript_density + 1),
+            _log10_1p(local_xy_kernel_transcript_density, threads),
             imagedim,
             'transcript_local_autocorrelation_density',
             'Transcript Local Autocorrelation Density (Value)', 
@@ -114,12 +111,16 @@ def generate_transcript_ambient_density_image(
     # combined = -1     ---> -1 * 1 or 1 * -1 = disagreement, direction between global and local
     # combined = 1      ---> -1 * -1 or 1 * 1 = agreement, direction between global and local
     # combined = 0      ---> 0 * -1 or 0 * 1 or -1 * 0 or 1 * 0 = vanishing, RNA is either global or local ambient
-    xy_kernel_ac_density = np.abs(local_xy_kernel_transcript_density * xy_kernel_transcript_density)
+    xy_kernel_ac_density = map_rows(
+        lambda local, potential: np.abs(local * potential),
+        (local_xy_kernel_transcript_density, xy_kernel_transcript_density),
+        threads,
+    )
 
     if ( figure_path != None ):
         helperfuncs.plot_pixels(
             figure_path,
-            np.log10(xy_kernel_ac_density + 1),
+            _log10_1p(xy_kernel_ac_density, threads),
             imagedim,
             'transcript_autocorrelation_density',
             'Transcript Autocorrelation Density (Combined)', 
@@ -128,7 +129,7 @@ def generate_transcript_ambient_density_image(
             True
         )
 
-    return xy_kernel_ac_density.flatten()
+    return xy_kernel_ac_density.ravel()
 
 
 def transcript_ac_image(

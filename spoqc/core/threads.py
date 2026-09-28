@@ -57,3 +57,30 @@ def configure(n: int) -> None:
     cv2.setNumThreads(n)  # OpenCV otherwise starts one thread per host CPU
     numcodecs.blosc.set_nthreads(n)
     N = n
+
+
+def map_slices(fn, n: int, step: int, workers: int) -> list:
+    """[fn(s) for s in slice(0, step), slice(step, 2 * step), ... up to n], run on `workers` threads.
+
+    For whole-array numpy work split by rows: numpy and scipy release the GIL inside their loops,
+    and elementwise or row-local work gives the same values whatever the split.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    slices = [slice(start, min(start + step, n)) for start in range(0, n, step)]
+    with ThreadPoolExecutor(workers) as executor:
+        return list(executor.map(fn, slices))
+
+
+def map_rows(fn, arrays: tuple, workers: int):
+    """fn(*arrays) for an elementwise (row-local) fn, computed on blocks of rows on `workers` threads."""
+    import numpy as np  # not at module level: configure() must run before numpy loads
+
+    n_rows = arrays[0].shape[0]
+    out = np.empty(arrays[0].shape, dtype=fn(*(a[:1] for a in arrays)).dtype)
+
+    def block(rows):
+        out[rows] = fn(*(a[rows] for a in arrays))
+
+    map_slices(block, n_rows, max(-(-n_rows // (4 * workers)), 1), workers)
+    return out

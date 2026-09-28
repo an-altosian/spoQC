@@ -70,8 +70,10 @@ def pixel_groups(x: np.ndarray, y: np.ndarray, x_range: tuple, y_range: tuple):
     # (pixel, position) keys are unique, so any sort (polars sorts on all its threads) gives this order.
     key = pl.Series((y[rows] - y0) * (x1 - x0) + (x[rows] - x0)) * n + pl.Series(rows)
     flat, rows = np.divmod(key.sort().to_numpy(), n)
+    if len(flat) == 0:
+        return flat, rows, np.zeros(1, dtype=np.int64)
     starts = np.flatnonzero(np.diff(flat)) + 1
-    pixels = flat[np.concatenate(([0], starts))] if len(flat) else flat
+    pixels = flat[np.concatenate(([0], starts))]
     offsets = np.concatenate(([0], starts, [len(flat)]))
     return pixels, rows, offsets
 

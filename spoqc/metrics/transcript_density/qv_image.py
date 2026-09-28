@@ -1,8 +1,6 @@
 import spatialdata as sd
 import numpy as np
 
-from scipy.ndimage import convolve
-
 from ... import helperfuncs
 from ... import priors
 from . import transcript_density_image
@@ -37,22 +35,17 @@ def generate_transcript_quality_density_image(
     )
     timer.stop()
 
-    xy_transcript_density = np.array(transcript_density_list).reshape(dim_x, dim_y)
+    xy_transcript_density = transcript_density_list.reshape(dim_x, dim_y)
 
     img_extent = sd.get_extent(sdata[image_type], coordinate_system='global')
     imagedim = helperfuncs.ImageDimStruct(img_extent['x'][0], img_extent['y'][0],
                                         img_extent['x'][1], img_extent['y'][1])
     nuclei_centroid_coords = sd.get_centroids(sdata['nucleus_boundaries'], coordinate_system='global').compute()
 
-    # Create circular kernel (disk mask)
-    y, x = np.ogrid[-kernel_radius:kernel_radius+1, -kernel_radius:kernel_radius+1]
-    mask = (x**2 + y**2) <= kernel_radius**2
-    kernel = mask.astype(xy_transcript_density.dtype)
-
     print("[NOTE] Densitiy calculation")
     timer.start()
-    xy_kernel_transcript_density = convolve(xy_transcript_density, kernel, mode='constant', cval=0)
-    xy_kernel_transcript_density = np.flipud(xy_kernel_transcript_density)
+    xy_kernel_transcript_density = transcript_density_image.disk_density(xy_transcript_density, kernel_radius, threads.N)
+    del transcript_density_list, xy_transcript_density
     timer.stop()
     #xy_kernel_transcript_density = xy_kernel_transcript_density.astype(np.uint16) # conversion needed for cv2
 
@@ -82,7 +75,7 @@ def generate_transcript_quality_density_image(
                 points=nuclei_centroid_coords
             )
 
-    return xy_kernel_transcript_density.flatten()
+    return xy_kernel_transcript_density.ravel()
 
 
 def transcript_qv_image(

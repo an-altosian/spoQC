@@ -11,13 +11,14 @@ partitions and divisions. The parts are built and written on `threads` threads.
 
 import os
 import shutil
-from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+from .threads import map_slices
 
 INDEX_NAME = "__null_dask_index__"  # what dask names an unnamed index it writes
 
@@ -34,22 +35,19 @@ def write_parts(
     if os.path.exists(path):
         shutil.rmtree(path)
     os.makedirs(path)
-    starts = range(0, n_rows, chunk_size)
-    if not starts:
+    if n_rows == 0:
         return
     first = part_columns(0, min(chunk_size, n_rows))
     empty = pd.DataFrame({name: values[:0] for name, values in first.items()})
     empty.index = pd.Index(np.arange(0, dtype=np.int64), name=INDEX_NAME)
     schema = pa.Table.from_pandas(empty, nthreads=1, preserve_index=True).schema
 
-    def write(i):
-        start = starts[i]
-        stop = min(start + chunk_size, n_rows)
-        columns = first if i == 0 else part_columns(start, stop)
+    def write(rows):
+        i = rows.start // chunk_size
+        columns = first if i == 0 else part_columns(rows.start, rows.stop)
         arrays = [pa.array(values) for values in columns.values()]
-        arrays.append(pa.array(np.arange(start, stop, dtype=np.int64)))
+        arrays.append(pa.array(np.arange(rows.start, rows.stop, dtype=np.int64)))
         table = pa.Table.from_arrays(arrays, schema=schema)
         pq.write_table(table, f"{path}/part.{i}.parquet", compression="snappy")
 
-    with ThreadPoolExecutor(threads) as executor:
-        list(executor.map(write, range(len(starts))))
+    map_slices(write, n_rows, chunk_size, threads)

@@ -1275,9 +1275,10 @@ def histogram(array, nbins):
     bins sns.histplot(array, bins=nbins) draws), counted on core.threads.N threads."""
     array = np.asarray(array)
     value_range = (np.nanmin(array), np.nanmax(array))
-    chunks = np.array_split(array, threads.N)
-    with concurrent.futures.ThreadPoolExecutor(threads.N) as executor:
-        counts = sum(executor.map(lambda chunk: np.histogram(chunk, bins=nbins, range=value_range)[0], chunks))
+    counts = sum(threads.map_slices(
+        lambda rows: np.histogram(array[rows], bins=nbins, range=value_range)[0],
+        len(array), -(-len(array) // threads.N), threads.N,
+    ))
     return counts, np.histogram_bin_edges(array[:0], bins=nbins, range=value_range)
 
 

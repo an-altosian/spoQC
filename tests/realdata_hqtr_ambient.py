@@ -23,7 +23,7 @@ threads.configure(THREADS)
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import spatialdata as sd  # noqa: E402
-from libpysal.weights import KNN, Queen  # noqa: E402
+from libpysal.weights import Queen  # noqa: E402
 import geopandas as gpd  # noqa: E402
 import dask.dataframe as dd  # noqa: E402
 
@@ -39,6 +39,7 @@ from spoqc.metrics.transcript_density import (  # noqa: E402
 )
 from conftest import assert_same_array, cli_sdata, load_legacy  # noqa: E402
 from test_core_spatial_neighbours import original_points_within_radius  # noqa: E402
+from test_local_moran_weights import assert_knn_weights_equal  # noqa: E402
 
 DENSITY = "spoqc.metrics.transcript_density"
 PRIORS = "spoqc.priors.hqtr"
@@ -187,11 +188,7 @@ def main():
     n_checked = 0
     for idx in neighbourhoods:
         if len(idx) > 30:
-            knn = KNN.from_array(xy[idx], k=30)
-            knn.transform = "r"
-            a, b = local_moran_I.build_weights(xy[idx], 30), knn.sparse
-            for attr in ("indptr", "indices", "data"):
-                assert_same_array(getattr(a, attr), getattr(b, attr), f"weights {attr}")
+            assert_knn_weights_equal(xy[idx])
             n_checked += 1
     print(f"EXACT MATCH KNN weights: {n_checked:,} neighbourhoods")
     old = timed(
