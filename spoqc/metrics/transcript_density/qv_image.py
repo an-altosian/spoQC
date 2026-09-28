@@ -1,6 +1,5 @@
 import spatialdata as sd
 import numpy as np
-import pandas as pd
 import dask.array as da
 import dask.dataframe as dd
 
@@ -8,7 +7,7 @@ from scipy.ndimage import convolve
 
 from ... import helperfuncs
 from ... import priors
-from ...core import transcripts
+from ...core import groupreduce, transcripts
 
 def generate_transcript_quality_density_image(
         sdata,
@@ -42,12 +41,7 @@ def generate_transcript_quality_density_image(
         .rename("qv_means")
     )
 
-    x_idx = range(int(imagedim.bb_xmin), int(imagedim.bb_xmax))
-    y_idx = range(int(imagedim.bb_ymin), int(imagedim.bb_ymax))
-    # pd.MultiIndex.from_product builds the identical index in C; from_tuples
-    # materialised one Python tuple per pixel first. Verified with
-    # mi_old.equals(mi_new) -> True, so every downstream value is unchanged.
-    grid_mi = pd.MultiIndex.from_product([y_idx, x_idx], names=["y", "x"]).swaplevel(0, 1)
+    grid_mi = groupreduce.pixel_grid_index(imagedim)
 
     transcript_density_list = (
         gm.reindex(grid_mi)     # align to the full grid

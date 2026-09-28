@@ -7,6 +7,7 @@ flat elements offsets[g]:offsets[g + 1].
 from typing import Callable
 
 import numpy as np
+import pandas as pd
 
 
 def group_offsets(group_idx: np.ndarray, n_groups: int) -> np.ndarray:
@@ -45,3 +46,15 @@ def ragged_reduce(values: np.ndarray, offsets: np.ndarray, reducer: Callable, ou
 def ragged_lists(values: list, offsets: np.ndarray) -> list:
     """One Python list per group."""
     return [values[a:b] for a, b in zip(offsets[:-1], offsets[1:])]
+
+
+def pixel_grid_index(imagedim) -> pd.MultiIndex:
+    """The (x, y) MultiIndex of every pixel of the image's bounding box, in row-major order (y outer,
+    x inner), so values reindexed onto it reshape to (dim_x, dim_y) image rows.
+
+    Equal (`.equals()`, same names) to the MultiIndex.from_tuples of
+    [(x, y) for y in y_idx for x in x_idx] it replaces, built in C without a tuple per pixel.
+    """
+    x_idx = range(int(imagedim.bb_xmin), int(imagedim.bb_xmax))
+    y_idx = range(int(imagedim.bb_ymin), int(imagedim.bb_ymax))
+    return pd.MultiIndex.from_product([y_idx, x_idx], names=["y", "x"]).swaplevel(0, 1)
