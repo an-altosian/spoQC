@@ -16,7 +16,10 @@ numbers and leaves the global RNG in the same state, but:
 The pool is numba's (NUMBA_NUM_THREADS, set by spoqc.core.threads.configure).
 """
 
+from concurrent.futures import ThreadPoolExecutor
+
 import geopandas as gpd
+import numba
 import numpy as np
 from esda.moran import Moran
 from libpysal.weights import Queen
@@ -29,8 +32,30 @@ _M = 397
 _MATRIX_A = np.uint32(0x9908B0DF)
 _UPPER = np.uint32(0x80000000)
 _LOWER = np.uint32(0x7FFFFFFF)
+# permutations per pipeline block: the serial walk of block b+1 overlaps the
+# parallel statistics of block b
+_BLOCK = 64
 # numpy's pairwise summation: below this many elements it adds 8 running sums
 _PW_BLOCKSIZE = 128
+
+
+class _Queen(Queen):
+    """
+    Queen weights that keep their cached sparse matrix and s0/s1/s2 across re-transforms.
+
+    esda's Moran sets `w.transform` on every call. libpysal's setter then reassigns the
+    same cached weights dict and drops the cache, so the next `w.s1` rebuilds the
+    sparse matrix from Python dicts (~0.8 s on 168k cells), identically each time.
+    Setting the transform the weights already have is therefore skipped.
+    """
+
+    def set_transform(self, value="B"):
+        value = value.upper()
+        if value == self._transform and self.weights is self.transformations.get(value):
+            return
+        Queen.set_transform(self, value)
+
+    transform = property(Queen.get_transform, set_transform)
 
 
 def queen_weights(xy: np.ndarray):
@@ -43,10 +68,11 @@ def queen_weights(xy: np.ndarray):
     Returns:
         libpysal.weights.W: weights over the n points, in input order.
     """
-    gdf = gpd.GeoDataFrame(
-        {"x": xy[:, 0], "y": xy[:, 1]}, geometry=gpd.points_from_xy(xy[:, 0], xy[:, 1])
-    )
-    return Queen.from_dataframe(gdf)
+    gdf = gpd.GeoDataFrame({'x': xy[:, 0], 'y': xy[:, 1]},
+                           geometry=gpd.points_from_xy(xy[:, 0], xy[:, 1]))
+    w = Queen.from_dataframe(gdf)
+    w.__class__ = _Queen
+    return w
 
 
 @njit(nogil=True, cache=True)
@@ -86,32 +112,64 @@ def _smallest_mask(i):
 
 
 @njit(nogil=True, cache=True)
-def _shuffle_positions(key, pos, n, out):
-    """
-    Walks one legacy `shuffle` of n items from state (key, pos), mutating the state.
+def _temper_all(key, tempered):
+    for k in range(_N):
+        tempered[k] = _temper(key[k])
 
-    When `out` has n items it is shuffled in place; with 0 items only the draws are
-    consumed. Returns the new pos.
+
+@njit(nogil=True, cache=True)
+def _shuffle(key, tempered, pos, out):
     """
-    mask = _smallest_mask(n - 1)
-    swap = out.shape[0] == n
-    for i in range(n - 1, 0, -1):
-        while i <= (mask >> np.uint32(1)):
+    One legacy `shuffle` from state (key, pos): for i = n-1 .. 1 draw 32-bit words under
+    the smallest mask >= i until one is <= i, then swap items i and that word.
+
+    `tempered` holds key's tempered words; key and tempered advance in place.
+    Branchless per draw: a rejected draw swaps item i with itself.
+    Returns the new pos.
+    """
+    n = out.shape[0]
+    i = n - 1
+    if i <= 0:
+        return pos
+    mask = _smallest_mask(i)
+    while True:
+        if pos == _N:
+            _twist(key)
+            _temper_all(key, tempered)
+            pos = 0
+        v = np.int64(tempered[pos] & mask)
+        pos += 1
+        accept = v <= i
+        j = v if accept else i
+        t = out[i]
+        out[i] = out[j]
+        out[j] = t
+        i -= np.int64(accept)
+        if i == 0:
+            return pos
+        if i <= (mask >> np.uint32(1)):
             mask >>= np.uint32(1)
-        while True:
-            if pos == _N:
-                _twist(key)
-                pos = 0
-            v = _temper(key[pos]) & mask
-            pos += 1
-            if v <= i:
-                break
-        if swap:
-            j = np.int64(v)
-            t = out[i]
-            out[i] = out[j]
-            out[j] = t
-    return pos
+
+
+@njit(nogil=True, cache=True)
+def _skip_shuffle(key, tempered, pos, n):
+    """The draws of one legacy `shuffle` of n items, consumed without moving anything."""
+    i = n - 1
+    if i <= 0:
+        return pos
+    mask = _smallest_mask(i)
+    while True:
+        if pos == _N:
+            _twist(key)
+            _temper_all(key, tempered)
+            pos = 0
+        v = np.int64(tempered[pos] & mask)
+        pos += 1
+        i -= np.int64(v <= i)
+        if i == 0:
+            return pos
+        if i <= (mask >> np.uint32(1)):
+            mask >>= np.uint32(1)
 
 
 @njit(nogil=True, cache=True)
@@ -119,11 +177,12 @@ def _permutation_starts(key, pos, n, permutations):
     """Generator state at the start of each of `permutations` shuffles; advances key in place."""
     keys = np.empty((permutations, _N), dtype=np.uint32)
     starts = np.empty(permutations, dtype=np.int64)
-    nothing = np.empty(0, dtype=np.float64)
+    tempered = np.empty(_N, dtype=np.uint32)
+    _temper_all(key, tempered)
     for p in range(permutations):
         keys[p] = key
         starts[p] = pos
-        pos = _shuffle_positions(key, pos, n, nothing)
+        pos = _skip_shuffle(key, tempered, pos, n)
     return keys, starts, pos
 
 
@@ -223,8 +282,10 @@ def _permuted_cross_products(z, keys, starts, indptr, indices, data):
     inum = np.empty(permutations, dtype=np.float64)
     for p in prange(permutations):
         key = keys[p].copy()
+        tempered = np.empty(_N, dtype=np.uint32)
+        _temper_all(key, tempered)
         zp = z.copy()
-        _shuffle_positions(key, starts[p], n, zp)
+        _shuffle(key, tempered, starts[p], zp)
         prod = np.empty(n, dtype=np.float64)
         for r in range(n):
             s = 0.0  # scipy csr_matvec: y[r] = 0 + sum over the row's entries, in order
@@ -259,18 +320,29 @@ def moran(y, w, permutations: int) -> Moran:
 
     _, key, pos, has_gauss, cached_gaussian = np.random.get_state()
     key = key.copy()
-    keys, starts, pos = _permutation_starts(key, int(pos), n, permutations)
-    np.random.set_state(("MT19937", key, pos, has_gauss, cached_gaussian))
+    state = [int(pos)]
 
+    def walk(count):  # runs in order on one thread; advances key and state
+        keys, starts, state[0] = _permutation_starts(key, state[0], n, count)
+        return keys, starts
+
+    z = np.asarray(z, dtype=np.float64)
     sparse = w.sparse
-    inum = _permuted_cross_products(
-        np.asarray(z, dtype=np.float64),
-        keys,
-        starts,
-        sparse.indptr,
-        sparse.indices,
-        np.asarray(sparse.data, dtype=np.float64),
-    )
+    data = np.asarray(sparse.data, dtype=np.float64)
+    inum = np.empty(permutations, dtype=np.float64)
+    lows = range(0, permutations, _BLOCK)
+    threads = numba.get_num_threads()
+    numba.set_num_threads(max(1, threads - 1))  # one core walks
+    try:
+        with ThreadPoolExecutor(1) as walker:
+            blocks = [walker.submit(walk, min(_BLOCK, permutations - lo)) for lo in lows]
+            for lo, block in zip(lows, blocks):
+                keys, starts = block.result()
+                inum[lo:lo + len(starts)] = _permuted_cross_products(
+                    z, keys, starts, sparse.indptr, sparse.indices, data)
+    finally:
+        numba.set_num_threads(threads)
+    np.random.set_state(("MT19937", key, state[0], has_gauss, cached_gaussian))
 
     # esda's __calc and permutation summary, unchanged
     s0 = w.s0

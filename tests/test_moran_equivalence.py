@@ -11,6 +11,8 @@ import plotly.graph_objects as go
 import pytest
 from anndata import AnnData
 from esda.moran import Moran
+from libpysal.weights import Queen
+import geopandas as gpd
 
 from conftest import load_legacy
 from spoqc.core import moran as core_moran
@@ -55,6 +57,12 @@ def values(xy, rng, dtype):
     return y.astype(dtype)
 
 
+def legacy_queen(xy):
+    """origin/dev's weights: plain libpysal Queen from a points GeoDataFrame."""
+    gdf = gpd.GeoDataFrame({"x": xy[:, 0], "y": xy[:, 1]}, geometry=gpd.points_from_xy(xy[:, 0], xy[:, 1]))
+    return Queen.from_dataframe(gdf)
+
+
 def rng_state():
     return np.random.get_state()
 
@@ -84,7 +92,7 @@ def test_moran_matches_esda(n, dtype, permutations, predraws):
 
     np.random.seed(123)
     np.random.randint(0, 2**31, predraws)
-    ref = Moran(y, core_moran.queen_weights(xy), permutations=permutations)
+    ref = Moran(y, legacy_queen(xy), permutations=permutations)
     ref_state = rng_state()
 
     np.random.seed(123)
@@ -99,7 +107,7 @@ def test_moran_without_permutations_matches_esda():
     xy = points(500, rng, True)
     y = values(xy, rng, np.float64)
     state = rng_state()
-    ref = Moran(y, core_moran.queen_weights(xy), permutations=0)
+    ref = Moran(y, legacy_queen(xy), permutations=0)
     new = core_moran.moran(y, core_moran.queen_weights(xy), permutations=0)
     assert_same_state(state, rng_state())
     for attr in ["I", "z", "p_norm", "VI_rand"]:
@@ -113,7 +121,7 @@ def test_pca_loop_with_one_weights_matches_fresh_weights_per_pc():
     ys = [values(xy, rng, np.float64) for _ in range(4)]
 
     np.random.seed(123)
-    ref = [Moran(y, core_moran.queen_weights(xy), permutations=199) for y in ys]
+    ref = [Moran(y, legacy_queen(xy), permutations=199) for y in ys]
     ref_state = rng_state()
 
     np.random.seed(123)
