@@ -280,3 +280,21 @@ class TestMoransI:
             X, local_moran_I.KNNWeights(coords, 30), fill=-1.0, dtype=np.float32
         )
         assert_same_array(got, expected, "local")
+
+
+class TestWriteParts:
+    @pytest.mark.parametrize("n", [9_999, 10_000, 10_001, 20_000, 29_999, 30_001])
+    def test_nan_columns_match_dask_bytes(self, tmp_path, n):
+        """dask writes through pa.Table.from_pandas, which stores NaN as null."""
+        rng = np.random.default_rng(n)
+        columns = {name: rng.normal(0, 1, n) for name in ("a_density", "d_a_density", "norm_p_a_density")}
+        for values in columns.values():
+            values[rng.random(n) < 0.05] = np.nan
+        names = list(columns)
+        ddf = dd.from_dask_array(da.from_array(columns[names[0]], chunks=10_000), columns=[names[0]])
+        ddf = ddf.assign(**{k: dd.from_dask_array(da.from_array(columns[k], chunks=10_000)) for k in names[1:]})
+        helperfuncs.ddf_to_parquet(ddf, "hqtr", str(tmp_path), [], "old")
+        parquet.write_parts(
+            str(tmp_path / "hqtr_output_new"), n, lambda a, b: {k: v[a:b] for k, v in columns.items()}, 10_000, 3
+        )
+        assert_same_dir(tmp_path / "hqtr_output_new", tmp_path / "hqtr_output_old")

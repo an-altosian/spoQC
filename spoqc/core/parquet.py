@@ -45,7 +45,8 @@ def write_parts(
     def write(rows):
         i = rows.start // chunk_size
         columns = first if i == 0 else part_columns(rows.start, rows.stop)
-        arrays = [pa.array(values) for values in columns.values()]
+        # from_pandas: NaN becomes null, as pa.Table.from_pandas (dask's path) makes it
+        arrays = [pa.array(values, from_pandas=True) for values in columns.values()]
         arrays.append(pa.array(np.arange(rows.start, rows.stop, dtype=np.int64)))
         table = pa.Table.from_arrays(arrays, schema=schema)
         pq.write_table(table, f"{path}/part.{i}.parquet", compression="snappy")
