@@ -4,7 +4,8 @@ Usage:
     python tests/realdata_read_tmp_files.py <spatialdata.zarr> <tmp_folder>
 
 <tmp_folder> holds a run's *_hqcr.parquet files. Checks, against the verbatim original:
-- a step run on its own (obs without the steps' columns) reads every file, as the original did;
+- a step run on its own (obs without the steps' columns) reads every file, as the original did,
+  also when cli's mandatory block has already set generalqc's valid-geometry columns;
 - in -s all the steps' columns are already in obs: the fixed reader skips every file and
   leaves obs as it was, which is what the original's swallowed failure also left.
 """
@@ -46,3 +47,13 @@ pd.testing.assert_frame_equal(new["table"].obs, in_memory)
 print(
     "in-process (-s all): every file skipped, obs unchanged and identical to the original's"
 )
+
+# a step on its own: cli's mandatory block (correct_for_valid_geometries) set these first
+full = in_memory
+geometry = [f"{w}valid_{o}_geometry" for o in ("cell", "nucleus") for w in ("", "w")]
+mandatory = table()
+for col in geometry:
+    mandatory["table"].obs[col] = full[col].to_numpy()
+helperfuncs.read_sdata_parquet_tmp_files(mandatory, tmp_folder, "hqcr")
+pd.testing.assert_frame_equal(mandatory["table"].obs[full.columns], full)
+print(f"on its own with {geometry} already set: the other columns read, identical to the full read")

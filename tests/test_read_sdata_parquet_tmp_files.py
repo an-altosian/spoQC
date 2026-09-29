@@ -3,7 +3,7 @@
 The original compared the parquet schema's names, which include the stored pandas index
 ('index'), with obs.columns. So when a step's columns were already in obs (every -s all run)
 it did not skip the file, the join raised "columns overlap", and the warning swallowed it.
-The fixed reader skips those files, reads the others, and raises on any failure.
+The fixed reader reads only the columns obs does not have (skipping files with none), and\nraises on any failure.
 """
 
 import anndata as ad
@@ -133,12 +133,17 @@ def test_step_run_on_its_own_reads_every_file(tmp_folder):
     pd.testing.assert_frame_equal(got, expected.set_axis(expected.index.rename(None)))
 
 
-def test_partly_loaded_file_raises(tmp_folder):
-    folder, _ = tmp_folder
+def test_step_on_its_own_keeps_recomputed_columns_and_reads_the_rest(tmp_folder):
+    """A step run on its own recomputes some of a file's columns (cli's mandatory block sets
+    the valid-geometry columns of generalqc's file); only the other columns are read."""
+    folder, in_memory_obs = tmp_folder
     table = base_table()
-    table.obs["pct_counts_mt"] = 0.0  # one of generalqc's two columns
-    with pytest.raises(ValueError, match="columns overlap"):
-        helperfuncs.read_sdata_parquet_tmp_files({"table": table}, str(folder), "hqcr")
+    table.obs["valid_cell_geometry"] = in_memory_obs["valid_cell_geometry"].to_numpy()
+    sdata = {"table": table}
+    helperfuncs.read_sdata_parquet_tmp_files(sdata, str(folder), "hqcr")
+    expected = in_memory_obs.assign(hqcr_traffic_light="green")
+    got = sdata["table"].obs[expected.columns]
+    pd.testing.assert_frame_equal(got, expected.set_axis(expected.index.rename(None)))
 
 
 def test_missing_folder_raises(tmp_path):

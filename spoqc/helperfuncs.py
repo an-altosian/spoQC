@@ -1141,17 +1141,18 @@ def read_sdata_parquet_tmp_files(sdata, spoqc_tmp_folder, suffix):
                  if file.endswith(f'{suffix}.parquet')]
     sdata['table'].obs.index = [str(x) for x in sdata['table'].obs.index]
     for tmp_file in tmp_files:
-        # Check the on-disk schema (cheap, no data read) so files already joined in a
-        # previous call, or computed in this process, are skipped instead of re-read. The
-        # stored pandas index ('index', '__index_level_0__') is not an obs column.
+        # Check the on-disk schema (cheap, no data read) and read only the columns obs does not
+        # have yet: files joined in a previous call or computed in this process are skipped, and
+        # columns a step run on its own already recomputed (the mandatory valid-geometry
+        # columns) are kept. The stored pandas index ('index', '__index_level_0__') is not a column.
         schema = pq.read_schema(tmp_file)
         index_columns = schema.pandas_metadata['index_columns']
-        columns = [col for col in schema.names if col not in index_columns]
-        if all(col in sdata['table'].obs.columns for col in columns):
+        missing = [col for col in schema.names if col not in index_columns and col not in sdata['table'].obs.columns]
+        if not missing:
             print(f'[NOTE] skip {tmp_file}, already loaded in')
             continue
         print(f'[NOTE] read in {tmp_file}')
-        tmp_data = pd.read_parquet(tmp_file)
+        tmp_data = pd.read_parquet(tmp_file, columns=missing)
         tmp_data.index = [str(x) for x in tmp_data.index]
         sdata['table'].obs = sdata['table'].obs.join(tmp_data, how='left')
 

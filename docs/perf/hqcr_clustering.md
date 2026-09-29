@@ -58,10 +58,14 @@ In `-s all` the steps' columns are already in `obs`, so the join raised "columns
 Every file after the failing one was then not even tried.
 It did no harm only because every column was already in memory.
 
-**Now:** the index columns (from the schema's pandas metadata) are excluded before the check, and there is no `try/except`, so any failure raises.
+**Now:** the index columns (from the schema's pandas metadata) are excluded, only the columns `obs` does not have yet are read, and there is no `try/except`, so any failure raises.
+Reading only the missing columns matters for a step run on its own: cli's mandatory block (`correct_for_valid_geometries`) has already set the four valid-geometry columns of generalqc's file.
+origin/dev failed there too: with the listdir order of the real tmp folder it joined bubbleqc, cellqc and doubletqc, then swallowed the overlap at generalqc, so `canorm_transcript_counts` and voidqc's column were never read (`load_cell_df` would then raise a KeyError).
+In a rerun with a stale `traffic_light_output_hqcr.parquet` in the tmp folder, hqcr's first read now joins it; `combine_priors_hqcr` overwrites the column before anything reads it.
 
 Checks on the run's real tmp files (`tests/realdata_read_tmp_files.py`):
 - `-s all`: all six `*_hqcr.parquet` files are skipped. `obs` is unchanged, and identical to what the original left.
 - A step run on its own: all six files are read, identical to the original's read.
+- A step run on its own, with the valid-geometry columns already set: the other columns are read, and the result is identical to the full read.
 
-Tests: `tests/test_read_sdata_parquet_tmp_files.py` (both cases against the verbatim original; a partly loaded file and a missing folder raise).
+Tests: `tests/test_read_sdata_parquet_tmp_files.py` (against the verbatim original: the in-process case, the step on its own, the step with recomputed columns; a missing folder raises).
