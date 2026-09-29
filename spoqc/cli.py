@@ -528,7 +528,8 @@ def run(CONST):
             dim_x,
             dim_y,
             CONST.STAINING,
-            celltype_refined=False
+            celltype_refined=False,
+            threads=CONST.THREADS
         )
 
         print('[finish]')
@@ -608,6 +609,6 @@ def run(CONST):
     # Low resources, fast
     figures.wait()  # the report reads the figures
     if ( CONST.STEP in ['all', 'final_report'] ):
-        subworkflows.final_report.create_final_report(CONST.FIGURE_PATH, stainings, CONST.GENERATE_REPORT_DOC)
+        subworkflows.final_report.create_final_report(CONST.FIGURE_PATH, stainings, CONST.GENERATE_REPORT_DOC, bool(CONST.ANNOTATION_FILE))
     print("[FINISH]")
     # %%
