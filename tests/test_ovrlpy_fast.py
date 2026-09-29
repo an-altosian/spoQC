@@ -13,11 +13,12 @@ import pytest
 
 ovrlpy = pytest.importorskip("ovrlpy")
 
-from ovrlpy import _ovrlp, _utils  # noqa: E402
+from ovrlpy import _ovrlp, _subslicing, _utils  # noqa: E402
 
 from spoqc._ovrlpy_fast import (  # noqa: E402
     SUPPORTED_OVRLPY_VERSIONS,
     _calculate_embedding_sparse,
+    _message_passing_parallel,
     install,
 )
 
@@ -29,6 +30,7 @@ def restore_bindings(monkeypatch):
     """Let install() rebind ovrlpy, then put the stock function back for later tests."""
     monkeypatch.setattr(_utils, "_calculate_embedding", _utils._calculate_embedding)
     monkeypatch.setattr(_ovrlp, "_calculate_embedding", _ovrlp._calculate_embedding)
+    monkeypatch.setattr(_subslicing, "_message_passing", _subslicing._message_passing)
 
 
 def test_install_patches_both_bindings_on_the_pinned_version(restore_bindings):
@@ -36,15 +38,18 @@ def test_install_patches_both_bindings_on_the_pinned_version(restore_bindings):
     install()
     assert _utils._calculate_embedding is _calculate_embedding_sparse
     assert _ovrlp._calculate_embedding is _calculate_embedding_sparse
+    assert _subslicing._message_passing is _message_passing_parallel
 
 
 @pytest.mark.parametrize("version", ["9.9.9", "unknown version", None])
 def test_install_raises_on_an_unsupported_version(monkeypatch, restore_bindings, version):
     stock = _ovrlp._calculate_embedding
+    stock_passing = _subslicing._message_passing
     monkeypatch.setattr(ovrlpy, "__version__", version, raising=False)
     with pytest.raises(RuntimeError, match="reproduces the internals"):
         install()
     assert _ovrlp._calculate_embedding is stock, "a refused install must not patch"
+    assert _subslicing._message_passing is stock_passing, "a refused install must not patch"
 
 
 def test_supported_version_is_the_pinned_version():
