@@ -14,6 +14,7 @@ from scipy.stats import median_abs_deviation
 from .. import hqr
 from .. import helperfuncs
 from .. import priors
+from spoqc.core import knn
 from spoqc.core.figures import save_figure
 
 # Function to print all HQCRs
@@ -493,10 +494,11 @@ def load_data_for_hqcr(sdata, spoqc_tmp_folder, counts):
 def clustering_for_hqcr(qc_domains_adata, figure_path, CONST, seed, test_res_n_clusters=10, test_res=False):
     # leiden clustering
     print("[NOTE] Cell QC clustering")
-    sc.pp.neighbors(qc_domains_adata, n_neighbors=20, random_state=seed)
-    sc.tl.umap(qc_domains_adata, random_state=seed)
+    knn.neighbors(qc_domains_adata, n_neighbors=20, random_state=seed, threads=CONST.THREADS)
 
     if ( test_res ):
+        # X_umap is read only by test_resolutions_leiden's silhouette scores
+        sc.tl.umap(qc_domains_adata, random_state=seed)
         helperfuncs.test_resolutions_leiden(qc_domains_adata, figure_path, CONST.THREADS, k=test_res_n_clusters)
 
     sc.tl.leiden(qc_domains_adata, resolution=1.2)
