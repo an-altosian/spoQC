@@ -649,6 +649,22 @@ class TestBrokenPools:
             figures.wait()
         monkeypatch.undo()
 
+    def test_a_base_exception_in_submit_leaks_no_reservation(self, pool, monkeypatch, tmp_path):
+        class Interrupt(BaseException):
+            pass
+
+        def interrupted_submit(*args):
+            raise Interrupt
+
+        monkeypatch.setattr(figures._executor, "submit", interrupted_submit)
+        with pytest.raises(Interrupt):
+            save_figure(_scatter(), tmp_path / "kept.png")
+        assert not figures._reserved and len(figures._held) == 1  # not lost
+        assert not figures._errors  # an interrupt is re-raised, not recorded as a write error
+        monkeypatch.undo()
+        assert _wait_with_timeout() is None  # a later wait() submits it again and returns
+        assert (tmp_path / "kept.png").stat().st_size > 0
+
 
 class TestErrorBookkeeping:
     def test_secondary_errors_are_logged_not_dropped(self, caplog):

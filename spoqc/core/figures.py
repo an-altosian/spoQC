@@ -310,18 +310,22 @@ def _submit(picks):
 
     submit() takes the pool's shutdown lock, and a breaking pool holds that lock while its
     futures' callbacks (_finished) take _state: holding _state here would invert that order.
-    A submit that fails puts its figure and the ones after it back, and records the error.
+    A submit that fails puts its figure and the ones after it back, so no reservation leaks,
+    and records the error. A BaseException (e.g. KeyboardInterrupt) is re-raised instead of
+    recorded; a later wait() submits those figures again.
     """
     for n, (token, pool, (args, nbytes)) in enumerate(picks):
         try:
             future = pool.submit(_write, *args)
-        except Exception as error:  # e.g. BrokenProcessPool
+        except BaseException as error:  # e.g. BrokenProcessPool, KeyboardInterrupt
             with _state:
                 for t, _, item in reversed(picks[n:]):
                     del _reserved[t]
                     _held.appendleft(item)
-                _errors.append(error)
                 _state.notify_all()
+                if not isinstance(error, Exception):
+                    raise
+                _errors.append(error)
             return
         with _state:
             del _reserved[token]
