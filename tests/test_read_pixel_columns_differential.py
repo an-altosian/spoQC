@@ -118,7 +118,8 @@ def test_uneven_dask_partitions(tmp_path):
 
 @pytest.mark.parametrize("threads", [1, 2, 7])
 def test_parts_of_several_row_groups_in_any_thread_count(tmp_path, threads):
-    """Parts of several row groups: row groups finish in any order on the pool, rows stay in order."""
+    """spoQC's layout: parts of several row groups (core.parquet.PART_ROWS rows of 1,048,576-row
+    groups in production); row groups finish in any order on the pool, rows stay in order."""
     n_rows = 5 * 700 + 311
     path = f"{tmp_path}/d"
     os.makedirs(path)
@@ -164,7 +165,7 @@ def test_nulls_in_one_part(tmp_path, type_, null_part):
 
 
 def test_out_is_filled_by_casting_assignment(tmp_path):
-    """One column into a column of an F-ordered float32 matrix, the
+    """read_pixel_features' call: one column into a column of an F-ordered float32 matrix, the
     values the old reader returns cast to float32 (NaN kept); other columns are still allocated."""
     n_rows = 3 * 500 + 17
     write_pixel_parts(f"{tmp_path}/d", n_rows, range(0, n_rows, 500), seed=9)

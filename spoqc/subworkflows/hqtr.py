@@ -1,5 +1,8 @@
 
+from .. import helperfuncs
 from .. import image_analysis
+
+CLUSTERING_STEPS = ['all', 'unittest', 'hqtr', 'hqtr_clustering']
 from .. import metrics
 
 def get_hqtr(
@@ -15,6 +18,9 @@ def get_hqtr(
         nstds_p=None,
     ):
 
+    # In-process handoff from clustering to refinement; refinement run on its own reads it back instead.
+    beliefs = None
+
     if ( CONST.STEP in ['all', 'unittest', 'hqtr', 'hqtr_metrices'] ):
 
         image_analysis.structure_analysis.start_image_struc_analyis(
@@ -27,8 +33,13 @@ def get_hqtr(
             imagedim,
             dim_x,
             dim_y,
-            CONST.OVERWRITE
+            CONST.OVERWRITE,
+            CONST.THREADS,
         )
+
+        if ( CONST.STEP not in CLUSTERING_STEPS ):
+            # No clustering in this process to take the in-memory metric columns.
+            helperfuncs.PIXEL_FEATURES.clear()
 
         print('[finish]')
 
@@ -65,9 +76,9 @@ def get_hqtr(
 
         print('[finish]')
 
-    if ( CONST.STEP in ['all', 'unittest', 'hqtr', 'hqtr_clustering'] ):
+    if ( CONST.STEP in CLUSTERING_STEPS ):
 
-        image_analysis.pixel_scoring_dask.start_pixel_qc(
+        beliefs = image_analysis.pixel_scoring_dask.start_pixel_qc(
             sdata,
             CONST.FIGURE_PATH,
             spoqc_tmp_folder,
@@ -99,7 +110,8 @@ def get_hqtr(
                 dim_x,
                 dim_y,
                 1.5,
-                15
+                15,
+                beliefs_raw=beliefs,
         )
 
         print('[finish]')
@@ -117,6 +129,7 @@ def get_hqtr(
             dim_y,
             imagedim,
             'raw',
+            CONST.THREADS,
             dilation_radius=1
         )
 

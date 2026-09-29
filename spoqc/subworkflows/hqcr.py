@@ -311,7 +311,7 @@ def map_values_to_cells(
     flat_labels = labels.ravel()
 
     # Extract only valid pixels (index_map > 0 or > -1 depending on background)
-    valid = flat_index >= 0  # change to >0 if background is 0
+    valid = flat_index > 0  # background is 0 (rasterize fill=0), so exclude it
 
     flat_index = flat_index[valid]
     flat_labels = flat_labels[valid]
@@ -443,8 +443,6 @@ def cell_quality_probability_refinement(sdata, imagedim, image_type, resolution,
         
     beliefs, labels = hqr.markov_random_field_zarr_parallel.first_version_loopy_belief_propagation_parallel(
         average_cell_probability_image,
-        spoqc_tmp_folder,
-        'hqcr',
         beta=1.5,
         max_iter=15,
         normalize='total'

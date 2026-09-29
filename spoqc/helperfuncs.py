@@ -11,7 +11,6 @@ import dask.dataframe as dd
 import dask.array as da
 import dask
 import time
-import pyarrow as pa
 import pyarrow.parquet as pq
 import shutil
 import scanpy as sc
@@ -20,7 +19,7 @@ import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import concurrent.futures
 
-from typing import NamedTuple, Dict, List, Union, Tuple, Any, Optional, Sequence
+from typing import NamedTuple, Dict, List, Union, Tuple, Any, Optional
 from anndata import AnnData
 from tqdm import tqdm
 from sklearn.metrics import silhouette_score
@@ -29,7 +28,7 @@ from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 from scipy.ndimage import gaussian_filter
 from scipy.stats import norm
-from spoqc.core import figures, threads
+from spoqc.core import figures, parquet, raster, threads
 from spoqc.core.figures import save_figure
 
 class ImageDimStruct(NamedTuple):
@@ -130,29 +129,45 @@ def create_fraction_df(adata: AnnData, group: str, category: str) -> Dict[str, U
     return(d)    
 
 
-def read_data_as_ddf(tmp_files, chunk_size):
-    # Preallocate a Dask Array with correct shape and chunks
-    col_series = [
-        dd.read_parquet(file).iloc[:, 0].reset_index(drop=True)
-        for file in tmp_files
-    ]
+# Per-pixel metric columns handed from structure analysis to pixel scoring in memory, keyed by
+# the parquet path nparr_to_parquet wrote them to. They are float32, the dtype pixel scoring
+# clusters and sums them in. read_pixel_features takes each one out, so it is held only until then.
+PIXEL_FEATURES = {}
+FEATURE_COPY_ROWS = 1 << 22  # rows per threaded copy of a handed-off column
 
-    # Compute all per-file partition lengths together (in parallel) instead of
-    # letting to_dask_array(lengths=True) block on each file one at a time.
-    lengths_per_col = dask.compute(*[s.map_partitions(len) for s in col_series])
 
-    array_columns = []
-    for col_ddf, lengths in zip(col_series, lengths_per_col):
-        col_arr = col_ddf.to_dask_array(lengths=tuple(lengths)).rechunk((chunk_size,))
-        array_columns.append(col_arr[:, None])  # make 2D for stacking
+def _copy_rows(source, target, workers):
+    """target[:] = source (cast to target's dtype), FEATURE_COPY_ROWS rows at a time on `workers` threads."""
+    threads.map_slices(lambda rows: target.__setitem__(rows, source[rows]), len(source), FEATURE_COPY_ROWS, workers)
 
-    # Stack columns into 2D Dask Array
-    dask_array = da.hstack(array_columns).astype(np.float32)  # Much cheaper than dd.concat
-    dask_array = dask_array.rechunk((chunk_size, -1))
-    # Optional but recommended to avoid re-reading Parquet each epoch:
-    # da.to_zarr(dask_array, "dask_array.zarr", overwrite=True); dask_array = da.from_zarr("dask_array.zarr")
 
-    return dask_array
+def read_pixel_features(tmp_files, threads):
+    """Stack per-pixel metric files into one (n_pixels, n_files) float32 matrix, column j = tmp_files[j].
+
+    A column comes from PIXEL_FEATURES when structure analysis ran in this process, else from its
+    parquet (column `name` of `{name}_output_{suffix}.parquet`, as nparr_to_parquet writes it),
+    read by row group on `threads` threads. The matrix is Fortran-ordered so filling one column
+    touches only that column's pages, and each handed-off column is freed once copied.
+    """
+    def n_pixels(tmp_file):
+        column = PIXEL_FEATURES.get(os.path.abspath(tmp_file))
+        return raster.pixel_rows(tmp_file) if column is None else len(column)
+
+    n_rows = n_pixels(tmp_files[0])
+    for tmp_file in tmp_files:
+        n_file = n_pixels(tmp_file)
+        if n_file != n_rows:
+            raise ValueError(f"[ERROR] {tmp_file} has {n_file} pixels, {tmp_files[0]} has {n_rows}")
+    features = np.empty((n_rows, len(tmp_files)), dtype=np.float32, order='F')
+    for j, tmp_file in enumerate(tmp_files):
+        column = PIXEL_FEATURES.pop(os.path.abspath(tmp_file), None)
+        if column is None:
+            name = os.path.basename(tmp_file).split('_output_')[0]
+            raster.read_pixel_columns(tmp_file, [name], n_rows, threads, out={name: features[:, j]})
+        else:
+            _copy_rows(column, features[:, j], threads)
+        del column
+    return features
 
 
 def deduplicate_dask_index(ddf: Any) -> Any:
@@ -999,9 +1014,28 @@ def test_resolutions_leiden(
     return win_res
 
 
-def min_max_normalize(array):
-    array = np.array(array)
-    return (array - np.min(array)) / (np.max(array) - np.min(array))
+def min_max_normalize(array, workers=1, out=None):
+    """
+    (x - min) / (max - min), with min and max over the non-NaN values (NaN stays NaN) and a zero
+    range divided by 1, so a constant array scales to 0. Elementwise work runs on `workers`
+    threads; `out` may be `array` itself to scale it in place.
+    """
+    array = np.asarray(array)
+    # slices of at most 2^18 values keep the temporaries small (2 MB of float64)
+    step = max(min(-(-len(array) // workers), 1 << 18), 1)
+    bounds = threads.map_slices(lambda s: (np.nanmin(array[s]), np.nanmax(array[s])), len(array), step, workers)
+    data_min = np.nanmin([b[0] for b in bounds])
+    data_range = np.nanmax([b[1] for b in bounds]) - data_min
+    if data_range == 0:
+        data_range = 1
+    if out is None:
+        out = np.empty(array.shape, dtype=np.true_divide(array[:1] - data_min, data_range).dtype)
+
+    def scale(s):
+        out[s] = (array[s] - data_min) / data_range
+
+    threads.map_slices(scale, len(array), step, workers)
+    return out
 
 
 def get_stuff_from_image_around_coords(pixel_coords, radius, xy_image_feature, imagedim):
@@ -1142,9 +1176,19 @@ def read_sdata_parquet_tmp_files(sdata, spoqc_tmp_folder, suffix):
         sdata['table'].obs = sdata['table'].obs.join(tmp_data, how='left')
 
 def nparr_to_parquet(np_arr, prefix, spoqc_tmp_folder, suffix):
+    """Write a per-pixel metric column as the parquet directory {prefix}_output_{suffix}.parquet
+    (parts of core.parquet.PART_ROWS rows, written in parallel; each part is the file pq.write_table
+    writes for its rows) and hand a float32 copy to pixel scoring (PIXEL_FEATURES)."""
     outfile = f"{spoqc_tmp_folder}/{prefix}_output_{suffix}.parquet"
-    table = pa.Table.from_arrays([pa.array(np_arr)], names=[prefix])
-    pq.write_table(table, outfile)
+    workers = threads.budget()
+    parquet.write_parts(outfile, len(np_arr), parquet.columns_of({prefix: np_arr}),
+                        range(0, len(np_arr), parquet.PART_ROWS), workers, dask_index=False)
+    if np_arr.dtype == np.float32:
+        column = np_arr
+    else:
+        column = np.empty(len(np_arr), dtype=np.float32)
+        _copy_rows(np_arr, column, workers)
+    PIXEL_FEATURES[os.path.abspath(outfile)] = column
 
 def df_to_parquet(df, prefix, spoqc_tmp_folder, obs_columns, suffix):
     outfile = f"{spoqc_tmp_folder}/{prefix}_output_{suffix}.parquet"
@@ -1154,139 +1198,6 @@ def df_to_parquet(df, prefix, spoqc_tmp_folder, obs_columns, suffix):
     write_df.index = index
     write_df.to_parquet(outfile)
     return(obs_columns + new_columns)
-
-
-def ddf_to_parquet(
-    ddf: "dd.DataFrame",
-    prefix: str,
-    spoqc_tmp_folder: str,
-    obs_columns: Sequence[str],
-    suffix: str,
-    *,
-    partition_on: str = None,
-    include_index: bool = True,
-    overwrite: bool = True,
-    engine: str = "pyarrow",
-) -> List[str]:
-    """
-    Write the non-observation columns of a Dask DataFrame to Parquet.
-
-    Parameters
-    ----------
-    df : dask.dataframe.DataFrame
-        Input Dask DataFrame.
-    prefix, spoqc_tmp_folder, suffix : str
-        Used to form the output path: {spoqc_tmp_folder}/{prefix}_output_{suffix}.parquet
-    obs_columns : Sequence[str]
-        Columns to exclude from the Parquet write.
-    include_index : bool, default True
-        Whether to persist the index into Parquet.
-    partition_on: str, default None
-        Give partition key to make use of directory based disk partition.
-    overwrite : bool, default True
-        Overwrite existing output.
-    engine : str, default "pyarrow"
-        Parquet engine.
-
-    Returns
-    -------
-    List[str]
-        Column order list: obs_columns + new_columns
-    """
-    path = f"{spoqc_tmp_folder}/{prefix}_output_{suffix}"
-
-    # Compute columns to write (Dask-friendly; no data materialized)
-    obs_set = set(obs_columns)
-    new_columns = [c for c in ddf.columns if c not in obs_set]
-
-    # Select only needed columns lazily
-    write_ddf = ddf[new_columns]
-
-    # Write to Parquet (this triggers computation)
-    write_ddf.to_parquet(
-        path,
-        engine=engine,
-        write_index=include_index,
-        overwrite=overwrite,
-        partition_on=partition_on,
-        compute=True,
-    )
-
-
-def read_df_parquet_tmp_files(intensities, spoqc_tmp_folder, suffix):
-    read_image_df = pd.DataFrame({
-        'pid': range(len(intensities)),
-        'intensity': intensities
-    })
-
-    try:
-        tmp_files = [f'{spoqc_tmp_folder}/{file}' for file in os.listdir(spoqc_tmp_folder) \
-                     if file.endswith(f'{suffix}.parquet')]
-        for tmp_file in tmp_files:
-            print(f'[NOTE] read in {tmp_file}')
-            tmp_data = pd.read_parquet(tmp_file)
-            tmp_data['pid'] = range(len(intensities))
-            read_image_df = pd.merge(read_image_df, tmp_data, on='pid', how='left')
-            del tmp_file
-            del tmp_data
-            gc.collect()
-        return read_image_df
-    except Exception as e:
-        print(f"[WARN] Failed to read parquet files from {spoqc_tmp_folder} because of {e}")
-        return None
-
-
-def read_df_parquet_tmp_files_daskified(num_values_image, spoqc_tmp_folder, suffix):
-    try:
-        # Create base DataFrame
-        read_image_df = pd.DataFrame({
-            'pid': np.arange(num_values_image)
-        })
-
-        # Convert to Dask and set 'pid' as index
-        read_image_ddf = dd.from_pandas(read_image_df, npartitions=4).set_index('pid')
-
-        # List all matching parquet files
-        tmp_files = [
-            os.path.join(spoqc_tmp_folder, file)
-            for file in os.listdir(spoqc_tmp_folder)
-            if file.endswith(f'{suffix}.parquet')
-        ]
-
-        for tmp_file in tmp_files:
-            print(f'[NOTE] Reading in {tmp_file}')
-            tmp_ddf = dd.read_parquet(tmp_file)
-            read_image_ddf = read_image_ddf.join(tmp_ddf, how='left')
-
-        return read_image_ddf
-
-    except Exception as e:
-        print(f"[WARN] Failed to read parquet files from {spoqc_tmp_folder} because of {e}")
-        return None
-
-
-def read_df_parquet_tmp_files_scorify(cluster_df, spoqc_tmp_folder, suffix):
-    try:
-        tmp_files = [f'{spoqc_tmp_folder}/{file}' for file in os.listdir(spoqc_tmp_folder) \
-                     if file.endswith(f'{suffix}.parquet')]
-        for tmp_file in tmp_files:
-            print(f'[NOTE] read in {tmp_file}')
-            tmp_data = pd.read_parquet(tmp_file)
-
-            # Ensure tmp_data has the correct number of rows
-            if ( len(tmp_data) != len(cluster_df)) :
-                raise ValueError(f"Row count mismatch: expected {len(cluster_df)}, got {len(tmp_data)}")
-
-            if ( tmp_data.isna().any().sum() ):
-                print("[DEBUG] Number of NaNs in each column:")
-                print(tmp_data.isna().sum().compute())
-
-            # Sum across each row and add to 'score'
-            cluster_df['score'] += tmp_data.sum(axis=1).values
-
-    except Exception as e:
-        print(f"[WARN] Failed to read parquet files from {spoqc_tmp_folder} because of {e}")
-        return None
 
 
 def histogram(array, nbins):

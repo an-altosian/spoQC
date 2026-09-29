@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import anndata as ad
+import numba
 import dask.dataframe as dd
 import geopandas as gpd
 import numpy as np
@@ -213,3 +214,20 @@ def parquet_rows(path):
     tables = [pq.read_table(f"{path}/{f}") for f in sorted(os.listdir(path), key=natural_sort_key)]
     assert all(t.schema.equals(tables[0].schema, check_metadata=True) for t in tables), path
     return pa.concat_tables(tables)
+
+
+@pytest.fixture
+def numba_threads(request):
+    """Run the test with request.param numba threads, restoring the old count after.
+
+    Skips when the numba pool cannot provide that many threads, so a
+    multi-thread case never silently runs single-threaded.
+    """
+    wanted = request.param
+    if wanted > numba.config.NUMBA_NUM_THREADS:
+        pytest.skip(f"needs {wanted} numba threads, pool has {numba.config.NUMBA_NUM_THREADS}")
+    previous = numba.get_num_threads()
+    numba.set_num_threads(wanted)
+    assert numba.get_num_threads() == wanted
+    yield wanted
+    numba.set_num_threads(previous)

@@ -1,5 +1,6 @@
 import dask.dataframe as dd
 import numpy as np
+import pandas as pd
 
 from .. import priors
 
@@ -88,47 +89,30 @@ def combine_priors_hqcr(sdata, figure_path, cell_df, qc_domains_adata, counts, d
     sdata['table'].obs['hqcr_traffic_light'] = traffic_lights
 
 
-def combine_priors_hqpr(spoqc_tmp_folder, image_ddf, belief_name, mask_name):
-    image_ddf = image_ddf.rename(
-        columns={
-            "norm_p_pixel_score": belief_name,
-            "pixel_score_mask": mask_name,
-        }
-    )
-    return image_ddf
+def combine_priors_hqpr(norm_p_pixel_score, pixel_score_mask, belief_name, mask_name):
+    return {belief_name: norm_p_pixel_score, mask_name: pixel_score_mask}
 
 
-def combine_priors_hqtr(spoqc_tmp_folder, image_ddf, belief_name, mask_name):
-    qv_ddf = dd.read_parquet(
-        f"{spoqc_tmp_folder}/hqtr_output_qv_prob",
-        columns=["norm_p_qv_density"],
-        engine="pyarrow",
-        calculate_divisions=True,
-    )
+def read_pixel_prior(path, column, n_rows):
+    # Read a per-pixel prior written by core.parquet.write_parts; its index must be the pixel order 0..n-1.
+    series = dd.read_parquet(path, columns=[column], engine="pyarrow")[column].compute()
+    if not series.index.equals(pd.RangeIndex(n_rows)):
+        raise ValueError(f"{path} is not indexed by pixel 0..{n_rows - 1}")
+    return series.to_numpy()
 
-    ac_ddf = dd.read_parquet(
-        f"{spoqc_tmp_folder}/hqtr_output_ac_prob",
-        columns=["norm_p_ac_density"],
-        engine="pyarrow",
-        calculate_divisions=True,
-    )
 
-    # Keep everything lazy / partitioned
-    belief = (
-        image_ddf["norm_p_pixel_score"]
-        + qv_ddf["norm_p_qv_density"]
-        + ac_ddf["norm_p_ac_density"]
-    )
-
-    image_ddf = image_ddf.assign(**{belief_name: belief})
+def combine_priors_hqtr(spoqc_tmp_folder, norm_p_pixel_score, pixel_score_mask, belief_name, mask_name):
+    n_rows = len(norm_p_pixel_score)
+    qv = read_pixel_prior(f"{spoqc_tmp_folder}/hqtr_output_qv_prob", "norm_p_qv_density", n_rows)
+    ac = read_pixel_prior(f"{spoqc_tmp_folder}/hqtr_output_ac_prob", "norm_p_ac_density", n_rows)
     num_priors = 3.0
-    scaled = image_ddf[belief_name] / num_priors
+    scaled = (norm_p_pixel_score + qv + ac) / num_priors
 
-    return image_ddf.assign(
-        **{
-            belief_name: scaled,
-            mask_name: (scaled > 0.5).astype("int8"),
-        }
-    )
+    return {
+        "norm_p_pixel_score": norm_p_pixel_score,
+        "pixel_score_mask": pixel_score_mask,
+        belief_name: scaled,
+        mask_name: (scaled > 0.5).astype("int8"),
+    }
 
 # %%
