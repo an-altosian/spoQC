@@ -6,7 +6,7 @@ usage: python tests/realdata_combine_masks.py <spoqc_tmp_dir> <scratch_dir> <row
 If the tmp dir has no hqtr smoothed mask, the raw hqtr mask stands in under the smoothed names."""
 import glob, os, re, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import numpy as np, pandas as pd, pyarrow.parquet as pq
+import pyarrow.parquet as pq
 SRC, DST, ROWS = sys.argv[1], sys.argv[2], int(sys.argv[3])
 DIM_Y = int(sys.argv[4]) if len(sys.argv) > 4 else 35416  # Xenium breast rep1 morphology_focus s0
 N = ROWS * DIM_Y
