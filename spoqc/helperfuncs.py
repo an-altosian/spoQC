@@ -1136,25 +1136,41 @@ def sdata_obs_to_parquet(sdata, figure_path, spoqc_tmp_folder, suffix, obs_colum
     write_df.to_parquet(f"{spoqc_tmp_folder}/{figure_path.split('/')[-2]}_output_{suffix}.parquet")
     return(obs_columns + new_columns)
 
+def _tmp_file_columns(tmp_file):
+    """A tmp parquet's data columns, from its schema (no data read); the stored pandas index
+    ('index', '__index_level_0__') is not one."""
+    schema = pq.read_schema(tmp_file)
+    if schema.pandas_metadata is None:
+        raise ValueError(f"{tmp_file} has no pandas metadata, so its index columns are unknown; "
+                         "spoQC tmp files are written with DataFrame.to_parquet")
+    index_columns = schema.pandas_metadata['index_columns']
+    return [col for col in schema.names if col not in index_columns]
+
+
 def read_sdata_parquet_tmp_files(sdata, spoqc_tmp_folder, suffix):
-    try:
-        tmp_files = [f'{spoqc_tmp_folder}/{file}' for file in os.listdir(spoqc_tmp_folder) \
-                     if file.endswith(f'{suffix}.parquet')]
-        sdata['table'].obs.index = [str(x) for x in sdata['table'].obs.index]
-        for tmp_file in tmp_files:
-            # Check the on-disk schema (cheap, no data read) so files already joined in a
-            # previous call are skipped instead of being re-read from disk every time.
-            columns = pq.ParquetFile(tmp_file).schema.names
-            if all(col in sdata['table'].obs.columns for col in columns):
-                print(f'[NOTE] skip {tmp_file}, already loaded in')
-                continue
-            print(f'[NOTE] read in {tmp_file}')
-            tmp_data = pd.read_parquet(tmp_file)
-            tmp_data.index = [str(x) for x in tmp_data.index]
-            sdata['table'].obs = sdata['table'].obs.join(tmp_data, how='left')
-    except Exception as e:
-        print(f"[WARN] Failed to read parquet files from {spoqc_tmp_folder}: {e}")
-        return None
+    tmp_files = [f'{spoqc_tmp_folder}/{file}' for file in os.listdir(spoqc_tmp_folder) \
+                 if file.endswith(f'{suffix}.parquet')]
+    sdata['table'].obs.index = [str(x) for x in sdata['table'].obs.index]
+    file_columns = {tmp_file: _tmp_file_columns(tmp_file) for tmp_file in tmp_files}
+    owners = {}
+    for tmp_file, columns in file_columns.items():
+        for col in columns:
+            owners.setdefault(col, []).append(tmp_file)
+    duplicates = {col: files for col, files in owners.items() if len(files) > 1}
+    if duplicates:
+        raise ValueError(f"columns in more than one tmp file of {spoqc_tmp_folder}: {duplicates}")
+    for tmp_file, columns in file_columns.items():
+        # Read only the columns obs does not have yet: files joined in a previous call or
+        # computed in this process are skipped, and columns a step run on its own already
+        # recomputed (the mandatory valid-geometry columns) are kept.
+        missing = [col for col in columns if col not in sdata['table'].obs.columns]
+        if not missing:
+            print(f'[NOTE] skip {tmp_file}, already loaded in')
+            continue
+        print(f'[NOTE] read in {tmp_file}')
+        tmp_data = pd.read_parquet(tmp_file, columns=missing)
+        tmp_data.index = [str(x) for x in tmp_data.index]
+        sdata['table'].obs = sdata['table'].obs.join(tmp_data, how='left')
 
 def nparr_to_parquet(np_arr, prefix, spoqc_tmp_folder, suffix):
     outfile = f"{spoqc_tmp_folder}/{prefix}_output_{suffix}.parquet"
