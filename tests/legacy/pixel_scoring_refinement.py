@@ -1,7 +1,10 @@
+# Verbatim spoqc/image_analysis/pixel_scoring_refinement.py at 5dab4f6 (perf/round2-doublet-combine): the dask mask readers, the reference for core.raster.read_pixel_columns.
 
 # In[]
+import dask.dataframe as dd
+
 from .. import hqr
-from ..core import parquet, raster, threads
+from ..core import parquet, threads
 
 # In[]
 def start_pixel_mask_refinement(
@@ -13,6 +16,7 @@ def start_pixel_mask_refinement(
         beta,
         max_iter,
         *,
+        chunk_size=10000,
         staining=None,
         beliefs_raw=None,
     ):
@@ -33,6 +37,7 @@ def start_pixel_mask_refinement(
 # modality = 'hqpr'
 # beta = 1.5
 # max_iter = 15
+# chunk_size=10000
 # staining=CONST.STAINING
 
 
@@ -50,9 +55,8 @@ def start_pixel_mask_refinement(
         figure_path = f'{figure_path}/{modality}/{modality}_refinement/'
 
     if ( beliefs_raw is None ):
-        beliefs_raw = raster.read_pixel_columns(
-            f'{spoqc_tmp_folder}/{prefix}_output_mask_raw', [f"{prefix}_beliefs"], dim_x * dim_y, threads.budget()
-        )[f"{prefix}_beliefs"]
+        image_ddf = dd.read_parquet(f'{spoqc_tmp_folder}/{prefix}_output_mask_raw', columns=[f"{prefix}_beliefs"], engine="pyarrow")
+        beliefs_raw = image_ddf[f"{prefix}_beliefs"].compute().to_numpy()
 
     # Start the refinement of the proability for the pixel score.
     beliefs, labels = hqr.markov_random_field_zarr_parallel.first_version_loopy_belief_propagation_parallel(
@@ -81,9 +85,11 @@ def start_pixel_mask_refinement(
         f"{prefix}_beliefs_smoothed": beliefs.ravel(),
         f"{prefix}_mask_smoothed": labels.ravel(),
     }
+    # origin/dev's parts: dd.from_pandas(npartitions=ceil(n / chunk_size))
     n_rows = len(beliefs_raw)
+    starts = parquet.from_pandas_starts(n_rows, max(1, -(-n_rows // chunk_size)))
     parquet.write_parts(f"{spoqc_tmp_folder}/{prefix}_output_mask_smoothed_raw", n_rows,
-                        parquet.columns_of(columns), range(0, n_rows, parquet.PART_ROWS), threads.budget())
+                        parquet.columns_of(columns), starts, threads.budget())
 
 
 # # In[]

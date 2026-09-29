@@ -35,13 +35,10 @@ Full slide (extrapolated): 91,295 files and ~7.6-8.4 GB per prior become 913 fil
 
 Tests: `tests/test_hqtr_ambient_differential.py::TestPrior` (values, columns and divisions against origin/dev's prior), and the real crop in `tests/realdata_hqtr_ambient.py`.
 
-### hqtr mask_raw keeps origin/dev's layout
+### hqtr/hqpr mask directories
 
-origin/dev's hqtr `mask_raw` frame was split at the union of its own `chunk_size` divisions and the priors' 10,000-row divisions, because adding the priors aligned the frames.
-`pixel_scoring_dask` now adds those 10,000-row divisions itself (`ORIGIN_PRIOR_PART_ROWS`), so hqtr `mask_raw` is byte-identical to origin/dev whatever the prior layout.
-It therefore still has the file-count problem: 91,295 part files at full slide (hqpr `mask_raw`, at the default `--pixel_qc_chunk_size` of 200,000, has 4,565).
-`{hqpr,hqtr}_output_mask_smoothed_raw` (the refinement, `chunk_size=10000`) has 91,295 files at full slide too.
-Neither layout was changed; that needs a decision.
+`mask_raw` and `mask_smoothed_raw` kept origin/dev's 10,000-row layout here (91,296 files per directory at full slide).
+They are now written in `core.parquet.PART_ROWS`-row parts and decoded in parallel: see `docs/perf/mask_layout.md`.
 
 ## Writers: one implementation
 

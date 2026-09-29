@@ -202,6 +202,20 @@ def assert_same_array(a, b, what: str) -> None:
         assert a.tobytes() == b.tobytes(), f"{what}: values differ"
 
 
+def parquet_rows(path):
+    """A per-pixel part directory as one pyarrow table, parts in dask's (natural) order; every
+    part must have the first part's schema, pandas metadata included."""
+    import os
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from dask.utils import natural_sort_key
+
+    tables = [pq.read_table(f"{path}/{f}") for f in sorted(os.listdir(path), key=natural_sort_key)]
+    assert all(t.schema.equals(tables[0].schema, check_metadata=True) for t in tables), path
+    return pa.concat_tables(tables)
+
+
 @pytest.fixture
 def numba_threads(request):
     """Run the test with request.param numba threads, restoring the old count after.

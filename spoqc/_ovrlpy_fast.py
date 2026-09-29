@@ -1,4 +1,4 @@
-"""A cheaper accumulation for ovrlpy's per-gene embedding.
+"""A cheaper accumulation for ovrlpy's per-gene embedding, and a parallel z-centre smoothing.
 
 ovrlpy 1.2.0 builds the top/bottom embeddings one gene at a time:
 
@@ -28,6 +28,7 @@ from __future__ import annotations
 from queue import Empty
 
 import numpy as np
+from numba import njit, prange
 
 SUPPORTED_OVRLPY_VERSIONS = ("1.2.0",)
 
@@ -129,10 +130,80 @@ def _calculate_embedding_sparse(genes, mask, components, **kwargs):
     return (0 if top_acc is None else top_acc, 0 if bottom_acc is None else bottom_acc)
 
 
+@njit(fastmath=False, error_model="numpy", inline="always")
+def _nanmean2(a, b):
+    """np.nanmean([a, b], axis=0) for one float32 pixel, in numpy's own steps: NaNs become 0.0
+    (_replace_nan); np.sum adds them onto its identity, (0.0 + a') + b' in float32; then
+    _divide_by_count's np.divide(tot, cnt), whose float32 / intp operands resolve to the float64
+    loop before the result is cast back to float32. 0 / 0 is NaN, numpy's all-NaN result.
+    The zeros are load-bearing for the sign of zero: numpy's nanmean of (-0.0, -0.0) and of
+    (-0.0, NaN) is +0.0, because -0.0 + 0.0 is +0.0 (tests/test_ovrlpy_message_passing.py)."""
+    zero = np.float32(0)
+    count = 0
+    if a != a:
+        a = zero
+    else:
+        count += 1
+    if b != b:
+        b = zero
+    else:
+        count += 1
+    return np.float32(np.float64((zero + a) + b) / count)
+
+
+@njit(parallel=True, fastmath=False, error_model="numpy")
+def _message_passing_step(x, out):
+    """One iteration of ovrlpy's _message_passing, row-parallel, into `out`:
+    ((m(x[i-1,j]) + m(x[i+1,j])) + m(x[i,j-1])) + m(x[i,j+1])) / 4 with m(v) = nanmean(x[i,j], v),
+    indices wrapping as np.roll does; the fold order is reduce(add, ...) over (axis 0, shift 1),
+    (axis 0, shift -1), (axis 1, shift 1), (axis 1, shift -1)."""
+    n_rows, n_cols = x.shape
+    four = np.float32(4)
+    for i in prange(n_rows):
+        up = i - 1 if i > 0 else n_rows - 1  # np.roll(x, 1, axis=0)[i] == x[i - 1]
+        down = i + 1 if i < n_rows - 1 else 0  # np.roll(x, -1, axis=0)[i] == x[i + 1]
+        for j in range(n_cols):
+            left = j - 1 if j > 0 else n_cols - 1
+            right = j + 1 if j < n_cols - 1 else 0
+            centre = x[i, j]
+            total = _nanmean2(centre, x[up, j]) + _nanmean2(centre, x[down, j])
+            total = total + _nanmean2(centre, x[i, left])
+            total = total + _nanmean2(centre, x[i, right])
+            out[i, j] = total / four
+
+
+def _message_passing_parallel(x, /, n_iter):
+    """Drop-in replacement for ovrlpy._subslicing._message_passing on its float32 elevation map.
+
+    ovrlpy runs each iteration as four np.roll copies and four np.nanmean calls over stacked
+    (2, n_rows, n_cols) arrays, all on one thread: 57.6 s of serial numpy on breast2's
+    7525 x 5470 map (20 iterations; the ~55 s of _replace_nan/_wrapreduction in the Doublet QC
+    profile). This computes each output pixel once from its four wrapped neighbours, rows in
+    parallel on the numba pool, in the same float32 operations in the same order (see
+    _nanmean2 and _message_passing_step), so the map is bit-identical, signed zeros and NaNs
+    included. Like ovrlpy, it leaves `x` unchanged and returns x itself when n_iter is 0.
+    Raises for any dtype but float32: ovrlpy's default, the one spoQC runs, and the one the
+    float64 division step above is written for.
+    """
+    if x.dtype != np.float32 or x.ndim != 2:
+        raise TypeError(
+            f"_message_passing_parallel reproduces ovrlpy on 2-D float32 maps only, got {x.ndim}-D {x.dtype}"
+        )
+    if n_iter < 1:
+        return x
+    source = np.empty_like(x)
+    target = np.empty_like(x)
+    _message_passing_step(x, target)
+    for _ in range(n_iter - 1):
+        source, target = target, source
+        _message_passing_step(source, target)
+    return target
+
+
 def install() -> bool:
     """Patch ovrlpy's embedding accumulation; raise if ovrlpy is not a version it reproduces."""
     import ovrlpy
-    from ovrlpy import _ovrlp, _utils
+    from ovrlpy import _ovrlp, _subslicing, _utils
 
     version = getattr(ovrlpy, "__version__", None)
     if version not in SUPPORTED_OVRLPY_VERSIONS:
@@ -147,3 +218,5 @@ def install() -> bool:
     _utils._calculate_embedding = _calculate_embedding_sparse
     # _ovrlp imported the symbol directly, so it needs rebinding too.
     _ovrlp._calculate_embedding = _calculate_embedding_sparse
+    # _assign_z_mean_message_passing looks _message_passing up in its own module at call time.
+    _subslicing._message_passing = _message_passing_parallel

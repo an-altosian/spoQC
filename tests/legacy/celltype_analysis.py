@@ -1,9 +1,11 @@
+# Verbatim spoqc/image_analysis/celltype_analysis.py at 5dab4f6 (perf/round2-doublet-combine): the dask mask readers, the reference for core.raster.read_pixel_columns.
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import dask.dataframe as dd
+
 from .. import helperfuncs
 from .. import subworkflows
-from spoqc.core import raster, threads
 from spoqc.core.figures import save_figure
 
 def start_image_celltype_analysis(
@@ -33,18 +35,23 @@ def start_image_celltype_analysis(
     # Image df
     qc_metrics = ['as_score', 's_score', 'intensity']
 
-    # One read of mask_raw for all four columns. The frames carry the pixel index 0..n-1 that
-    # dask read back from the parts ('__null_dask_index__').
-    n_pixels = dim_x * dim_y
-    columns = raster.read_pixel_columns(
-        f'{spoqc_tmp_folder}/{prefix}_output_mask_raw', [*qc_metrics, f'{prefix}_mask'], n_pixels, threads.budget()
+    # You have to read as dask because these paquet files are dask dataframes.
+    # Else you run into partition errors.
+    image_ddf = dd.read_parquet(
+        f'{spoqc_tmp_folder}/{prefix}_output_mask_raw',
+        columns=qc_metrics,
+        engine="pyarrow"
     )
-    image_df = pd.DataFrame({metric: columns[metric] for metric in qc_metrics},
-                            index=pd.Index(np.arange(n_pixels), name='index'))
+    image_df = image_ddf.compute()
+    image_df.index = image_df.index.set_names('index')
     image_df['intensity'] = np.log10( image_df['intensity'] + 1 )
 
-    mask_df = pd.DataFrame({f'{prefix}_mask': columns[f'{prefix}_mask']}, index=pd.Index(np.arange(n_pixels)))
-    del columns
+    mask_ddf = dd.read_parquet(
+        f'{spoqc_tmp_folder}/{prefix}_output_mask_raw',
+        columns=[f'{prefix}_mask'],
+        engine="pyarrow"
+    )
+    mask_df = mask_ddf.compute()
 
     for col in image_df.columns:
         image_df[col] = np.flipud(np.array(image_df[col]).reshape(dim_x, dim_y)).flatten()

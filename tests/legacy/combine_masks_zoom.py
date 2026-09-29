@@ -1,6 +1,8 @@
+# Verbatim spoqc/hqr/combine_masks_zoom.py at 5dab4f6 (perf/round2-doublet-combine): the dask mask readers, the reference for core.raster.read_pixel_columns.
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import dask.dataframe as dd
 import sys
 
 from matplotlib.colors import LinearSegmentedColormap
@@ -82,19 +84,25 @@ def start_combining_masks(
         hqcr_mask[hqcr_belief_name] = np.array(hqcr_mask[hqcr_belief_name]).reshape(dim_x, dim_y).flatten()
         hqcr_mask[hqcr_mask_name] = np.array(hqcr_mask[hqcr_mask_name]).reshape(dim_x, dim_y).flatten()
         
-        hqpr_mask = raster.read_pixel_columns(file_hqpr, [hqpr_belief_name, hqpr_mask_name], dim_x * dim_y, threads)
-        hqtr_mask = raster.read_pixel_columns(file_hqtr, [hqtr_belief_name, hqtr_mask_name], dim_x * dim_y, threads)
+        hqpr_mask = dd.read_parquet(
+            file_hqpr, 
+            columns=[hqpr_belief_name,hqpr_mask_name], engine="pyarrow"
+        )
+        hqtr_mask = dd.read_parquet(
+            file_hqtr,
+            columns=[hqtr_belief_name, hqtr_mask_name], engine="pyarrow"
+        )
 
         mask_df = pd.DataFrame({
             'hqcr_mask': hqcr_mask[hqcr_mask_name],
-            f'hqpr_{staining}_mask': hqpr_mask[hqpr_mask_name],
-            'hqtr_mask': hqtr_mask[hqtr_mask_name]
+            f'hqpr_{staining}_mask': hqpr_mask[hqpr_mask_name].compute().to_numpy(),
+            'hqtr_mask': hqtr_mask[hqtr_mask_name].compute().to_numpy()
         })
 
         beliefs_df = pd.DataFrame({
             'hqcr_beliefs': hqcr_mask[hqcr_belief_name],
-            f'hqpr_{staining}_beliefs': hqpr_mask[hqpr_belief_name],
-            'hqtr_beliefs': hqtr_mask[hqtr_belief_name]
+            f'hqpr_{staining}_beliefs': hqpr_mask[hqpr_belief_name].compute().to_numpy(),
+            'hqtr_beliefs': hqtr_mask[hqtr_belief_name].compute().to_numpy()
         })
 
         y_1 = dim_x - 1 - y_2_org

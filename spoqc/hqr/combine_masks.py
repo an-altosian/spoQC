@@ -92,19 +92,23 @@ def start_combining_masks(
         hqtr_belief_name = f'hqtr_beliefs{type_of_belief}'
         hqtr_mask_name = f'hqtr_mask{type_of_belief}'
 
-        # Each column is read once, row groups in parallel, straight into numpy (origin/dev
+        # Each file is read once for both of its columns, straight into numpy (origin/dev
         # computed each dask column separately and copied every column into two DataFrames).
+        hqcr = raster.read_pixel_columns(file_hqcr, [hqcr_mask_name, hqcr_belief_name], dim_x * dim_y, threads)
+        hqpr = raster.read_pixel_columns(file_hqpr, [hqpr_mask_name, hqpr_belief_name], dim_x * dim_y, threads)
+        hqtr = raster.read_pixel_columns(file_hqtr, [hqtr_mask_name, hqtr_belief_name], dim_x * dim_y, threads)
         mask_df = {
-            'hqcr_mask': raster.read_pixel_column(file_hqcr, hqcr_mask_name, threads),
-            f'hqpr_{staining}_mask': raster.read_pixel_column(file_hqpr, hqpr_mask_name, threads),
-            'hqtr_mask': raster.read_pixel_column(file_hqtr, hqtr_mask_name, threads)
+            'hqcr_mask': hqcr[hqcr_mask_name],
+            f'hqpr_{staining}_mask': hqpr[hqpr_mask_name],
+            'hqtr_mask': hqtr[hqtr_mask_name]
         }
 
         beliefs_df = {
-            'hqcr_beliefs': raster.read_pixel_column(file_hqcr, hqcr_belief_name, threads),
-            f'hqpr_{staining}_beliefs': raster.read_pixel_column(file_hqpr, hqpr_belief_name, threads),
-            'hqtr_beliefs': raster.read_pixel_column(file_hqtr, hqtr_belief_name, threads)
+            'hqcr_beliefs': hqcr[hqcr_belief_name],
+            f'hqpr_{staining}_beliefs': hqpr[hqpr_belief_name],
+            'hqtr_beliefs': hqtr[hqtr_belief_name]
         }
+        del hqcr, hqpr, hqtr
 
         final_mask = np.zeros(dim_x*dim_y)
         for m in ['hqcr', f'hqpr_{staining}', 'hqtr']:

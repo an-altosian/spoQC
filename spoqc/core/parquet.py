@@ -21,6 +21,12 @@ import pyarrow.parquet as pq
 from .threads import map_slices
 
 INDEX_NAME = "__null_dask_index__"  # what dask names an unnamed index it writes
+# Rows per part of spoQC's per-pixel mask directories (hqtr/hqpr mask_raw and mask_smoothed_raw):
+# 218 parts at 913 Mpx, each written as four 1,048,576-row row groups (pq.write_table's default),
+# which raster.read_pixel_columns decodes in parallel. At 10,000-row parts (origin/dev, 91,296
+# files) the read was bound by per-file Python overhead; from 1M rows up it is decode-bound
+# (docs/perf/mask_layout.md).
+PART_ROWS = 1 << 22
 
 
 def write_parts(
@@ -63,17 +69,6 @@ def write_parts(
         pq.write_table(table, f"{path}/part.{i}.parquet", compression="snappy")
 
     map_slices(write, len(starts), 1, threads)
-
-
-def from_pandas_starts(n_rows: int, n_partitions: int) -> list:
-    """The part starts of dd.from_pandas(frame, npartitions=n_partitions) for a frame with a unique
-    sorted (default) index: dask's sorted_division_locations gives the first n_rows % n_partitions
-    parts n_rows // n_partitions + 1 rows and the rest n_rows // n_partitions (without the Python
-    list of every index value it builds for that)."""
-    size, residual = divmod(n_rows, n_partitions)
-    sizes = [size + (i < residual) for i in range(n_partitions)]
-    starts = np.cumsum([0, *sizes[:-1]]).tolist()
-    return [s for s, n in zip(starts, sizes) if n > 0]
 
 
 def columns_of(columns: dict) -> Callable:
