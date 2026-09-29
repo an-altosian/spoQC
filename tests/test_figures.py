@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import types
+from concurrent.futures import Future
 from concurrent.futures.process import BrokenProcessPool
 
 import matplotlib
@@ -544,8 +545,8 @@ class TestDrain:
         monkeypatch.setattr(figures, "_pool", lambda n: pools.append(n) or real_pool(n))
         figures.start(4)
         in_flight = []
-        real_dispatch = figures._dispatch
-        monkeypatch.setattr(figures, "_dispatch", lambda: real_dispatch() or in_flight.append(len(figures._in_flight)))
+        real_submit = figures._submit
+        monkeypatch.setattr(figures, "_submit", lambda picks: real_submit(picks) or in_flight.append(len(figures._in_flight)))
         try:
             self._slow_figures(tmp_path, 8)
             computing = max(in_flight)
@@ -717,3 +718,95 @@ os._exit(0)  # die without shutting the pools down
             return True
 
         _until(lambda: not any(alive(p) for p in pids), timeout=10 * figure_worker.PARENT_POLL_SECONDS + 10)
+
+
+class _DieInWorkerAfter:
+    """Kills the worker `seconds` after it unpickles this (builtins only, so the worker imports
+    nothing first and the timing is exact)."""
+
+    def __init__(self, seconds):
+        self.seconds = seconds
+
+    def __reduce__(self):
+        return eval, (f"__import__('time').sleep({self.seconds}) or __import__('os')._exit(1)",)
+
+
+def _slow_submit(monkeypatch, pool, seconds, when):
+    """Make `pool.submit` sleep `seconds` first whenever `when()` is true (widens the window in
+    which the pool can break while a submit is under way); returns the list of delayed calls."""
+    real, delayed = pool.submit, []
+
+    def submit(*args):
+        if when():
+            delayed.append(threading.current_thread().name)
+            time.sleep(seconds)
+        return real(*args)
+
+    monkeypatch.setattr(pool, "submit", submit)
+    return delayed
+
+
+class TestLockOrder:
+    """A pool breaking while another thread is inside submit() must raise, not deadlock."""
+
+    def test_caller_submit_while_the_pool_breaks(self, monkeypatch):
+        # save_figure's own submit is delayed 3 s while the in-flight worker dies after 1 s: the
+        # pool breaks (its manager thread holds the shutdown lock and runs _finished) meanwhile.
+        figures.start(8)  # 2 background workers
+        try:
+            for _ in range(2):
+                save_figure(_SleepInWorker(0))
+            figures.wait()  # both background workers are up
+            save_figure(_DieInWorkerAfter(1.0))
+            result = {}
+
+            def run():
+                try:
+                    save_figure(_SleepInWorker(0))
+                    figures.wait()
+                    result["error"] = None
+                except BaseException as error:  # noqa: BLE001 - handed to the test
+                    result["error"] = error
+
+            caller = threading.Thread(target=run, daemon=True, name="caller")
+            armed = [True]
+
+            def when():
+                hit = armed[0] and threading.current_thread() is caller
+                if hit:
+                    armed[0] = False
+                return hit
+
+            delayed = _slow_submit(monkeypatch, figures._executor, 3.0, when)
+            caller.start()
+            caller.join(60)
+            assert "error" in result, "deadlock: save_figure/wait hung while the pool broke"
+            assert delayed == ["caller"]
+            assert isinstance(result["error"], BrokenProcessPool)
+        finally:
+            figures.abort()
+
+    def test_drain_callback_submit_to_the_background_pool_while_it_breaks(self, monkeypatch):
+        # A drain write finishes; its callback (on the drain pool's manager thread) hands the next
+        # held figure to the background pool, whose submit is delayed 3 s while its in-flight
+        # worker dies after 1 s: the background pool breaks meanwhile.
+        figures.start(8)  # 2 background workers, 6 drain workers
+        try:
+            for _ in range(2):
+                save_figure(_SleepInWorker(0))
+            figures.wait()
+            save_figure(_DieInWorkerAfter(1.0))  # one background worker busy, one idle
+            done = Future()
+            done.set_result(None)
+            with figures._state:
+                figures._in_flight[done] = (figures._drain, 0)  # a drain write that just finished
+                figures._held.append(((pickle.dumps(_SleepInWorker(0)), None, (), False, {}), 0))
+            callback = threading.Thread(target=figures._finished, args=(done,), daemon=True, name="drain-callback")
+            delayed = _slow_submit(monkeypatch, figures._executor, 3.0, lambda: threading.current_thread() is callback)
+            callback.start()
+            callback.join(60)
+            assert not callback.is_alive(), "deadlock: the drain callback's submit hung while the pool broke"
+            assert delayed == ["drain-callback"]
+            assert isinstance(_wait_with_timeout(), BrokenProcessPool)
+        finally:
+            figures.abort()

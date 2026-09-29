@@ -70,6 +70,7 @@ _workers = {}  # pool -> worker count
 # manager threads.
 _held = collections.deque()  # (the _write arguments, pickled bytes), not yet in a pool
 _in_flight = {}  # future -> (pool, pickled bytes)
+_reserved = {}  # token -> (pool, pickled bytes): taken from _held, being submitted
 _errors = []  # worker exceptions, re-raised on the main thread
 _draining = False
 _state = threading.Condition(threading.RLock())
@@ -261,11 +262,12 @@ def save_figure(fig, *paths, exact=False, **kwargs):
             _state.wait()
             _raise_worker_error()
         _held.append(((blob, rc, paths, exact, kwargs), len(blob)))
-        _dispatch()
+        picks = _reserve()
+    _submit(picks)
 
 
 def _pending_bytes():
-    return sum(n for _, n in _held) + sum(n for _, n in _in_flight.values())
+    return sum(n for _, n in _held) + sum(n for _, n in (*_in_flight.values(), *_reserved.values()))
 
 
 def _log_errors(errors, what):
@@ -283,35 +285,58 @@ def _raise_worker_error():
         raise first
 
 
-def _dispatch():
-    """Hand held figures to pools with an idle worker (the drain pool only while draining).
+def _reserve():
+    """Under _state: take the held figures that fit an idle worker and reserve its slot (the
+    drain pool only while draining). Nothing is taken once a write has failed.
 
-    Nothing is dispatched once a write has failed: the run is going to raise.
+    Returns (token, pool, item) for _submit(), which the caller runs after releasing _state.
     """
+    picks = []
     while _held and not _errors:
         pools = [_executor] + ([_drain] if _draining and _drain is not None else [])
-        busy = collections.Counter(pool for pool, _ in _in_flight.values())
+        busy = collections.Counter(pool for pool, _ in (*_in_flight.values(), *_reserved.values()))
         pool = next((p for p in pools if busy[p] < _workers[p]), None)
         if pool is None:
-            return
-        args, nbytes = _held[0]
+            break
+        item = _held.popleft()
+        token = object()
+        _reserved[token] = (pool, item[1])
+        picks.append((token, pool, item))
+    return picks
+
+
+def _submit(picks):
+    """Submit reserved figures. Must run WITHOUT _state held.
+
+    submit() takes the pool's shutdown lock, and a breaking pool holds that lock while its
+    futures' callbacks (_finished) take _state: holding _state here would invert that order.
+    A submit that fails puts its figure and the ones after it back, and records the error.
+    """
+    for n, (token, pool, (args, nbytes)) in enumerate(picks):
         try:
             future = pool.submit(_write, *args)
-        except Exception as error:  # e.g. BrokenProcessPool: keep it, the figure stays held
-            _errors.append(error)
+        except Exception as error:  # e.g. BrokenProcessPool
+            with _state:
+                for t, _, item in reversed(picks[n:]):
+                    del _reserved[t]
+                    _held.appendleft(item)
+                _errors.append(error)
+                _state.notify_all()
             return
-        _held.popleft()
-        _in_flight[future] = (pool, nbytes)
+        with _state:
+            del _reserved[token]
+            _in_flight[future] = (pool, nbytes)
         future.add_done_callback(_finished)
 
 
 def _finished(future):
-    """Done-callback, on a pool's manager thread (or the caller's, if already done).
+    """Done-callback, on a pool's manager thread (or the submitting thread, if already done).
 
-    Only a successful write dispatches the next figure. A pool that breaks sets its futures'
-    exceptions while holding its own shutdown lock, which submit() takes too, so submitting
-    from here would deadlock; failed and cancelled futures only record and notify.
+    A pool that breaks runs this for its futures while holding its own shutdown lock, so this
+    never calls submit() then: only a successful write hands out the next figure, and that
+    submit happens after _state is released. Failed and cancelled futures record and notify.
     """
+    picks = []
     with _state:
         try:
             del _in_flight[future]
@@ -320,9 +345,10 @@ def _finished(future):
             if future.exception() is not None:
                 _errors.append(future.exception())
                 return
-            _dispatch()
+            picks = _reserve()
         finally:
             _state.notify_all()
+    _submit(picks)
 
 
 def _pool(workers):
@@ -362,12 +388,16 @@ def wait():
     global _draining
     with _state:
         _draining = True
-        try:
-            _dispatch()
-            while _in_flight or (_held and not _errors):
+        picks = _reserve()
+    try:
+        _submit(picks)
+        with _state:
+            while _in_flight or _reserved or (_held and not _errors):
                 _state.wait()
-        finally:
+    finally:
+        with _state:
             _draining = False
+    with _state:
         _raise_worker_error()
 
 
