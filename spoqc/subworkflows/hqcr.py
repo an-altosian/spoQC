@@ -485,7 +485,10 @@ def load_data_for_hqcr(sdata, spoqc_tmp_folder, counts):
 
     # This I have to do to avoid an error because of the number of features I have selected.
     qc_metrices = list(cell_df.columns)
-    qc_domains_adata = qc_domains_adata[:,0:len(qc_metrices)]
+    # Setting X on a view writes into its parent's X. The view is taken of a copy, so the QC
+    # values do not overwrite the first genes of sdata['table'].X (the normlog layer) for later
+    # steps, while X is still written into the same float32 CSR the clustering has always read.
+    qc_domains_adata = qc_domains_adata[:,0:len(qc_metrices)].copy()[:, :]
     qc_domains_adata.X = cell_df
 
     return qc_domains_adata, cell_df, qc_metrices
