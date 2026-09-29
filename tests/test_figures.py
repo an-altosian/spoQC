@@ -1,3 +1,4 @@
+import io
 import os
 import pickle
 
@@ -172,11 +173,44 @@ class TestImageReduction:
         reduced = next(iter(figures._reduced_images(fig, 50).values()))
         assert (reduced.max(axis=1) > 0).sum() == len(range(0, 4000, 97))
 
-    @pytest.mark.parametrize("dtype", [np.uint8, np.int32, bool])
-    def test_integer_bool_and_label_images_are_never_reduced(self, dtype):
+    def _png(self, fig, exact):
+        buffer = io.BytesIO()
+        pickle.loads(figures._pickle(fig, exact, {"dpi": 50})).savefig(buffer, format="png", dpi=50)
+        buffer.seek(0)
+        return plt.imread(buffer)
+
+    @pytest.mark.parametrize("dtype", [np.uint8, np.int8, np.int32, bool])
+    def test_integer_and_bool_images_are_reduced_to_rgba(self, dtype):
         data = np.zeros((4000, 4000), dtype=dtype)
         data[::97, :] = 1
-        fig, _ = self._imshow(data)
+        fig, _ = self._imshow(data, cmap="gray")
+        assert self._reduced_shape(fig) == (400, 400, 4)
+
+    def test_integer_image_reduction_blends_label_colours_not_labels(self):
+        # labels 0 and 2 side by side in every block: tab10's colours 0 and 2 averaged, not colour 1
+        data = np.zeros((4000, 4000), dtype=np.int32)
+        data[:, 1::2] = 2
+        fig, ax = self._imshow(data, cmap="tab10")
+        reduced = next(iter(figures._reduced_images(fig, 50).values()))
+        colours = ax.images[0].to_rgba(np.array([[0, 2]]))[0]
+        np.testing.assert_allclose(reduced[5, 5], colours.mean(axis=0), atol=1e-6)
+
+    @pytest.mark.parametrize("cmap", ["gray", "tab10"])
+    def test_reduced_integer_image_renders_as_the_full_image_up_to_resampling(self, cmap):
+        # the same resampling difference the float reduction has (measured 3-7/255 mean)
+        rng = np.random.default_rng(0)
+        labels = np.repeat(np.repeat(rng.integers(0, 10, (400, 400)), 10, 0), 10, 1)
+        for data in (labels, labels.astype(np.float32)):
+            fig, _ = self._imshow(data, cmap=cmap)
+            error = np.abs(self._png(fig, exact=False) - self._png(fig, exact=True)).mean()
+            plt.close(fig)
+            assert error < 10 / 255, (data.dtype, error * 255)
+
+    def test_integer_image_with_array_alpha_or_data_stage_is_not_reduced(self):
+        data = np.zeros((4000, 4000), dtype=np.uint8)
+        fig, _ = self._imshow(data, alpha=np.ones((4000, 4000)))
+        assert self._reduced_shape(fig) is None
+        fig, _ = self._imshow(data, interpolation_stage="data")
         assert self._reduced_shape(fig) is None
 
     @pytest.mark.parametrize("interpolation", ["nearest", "none"])

@@ -38,12 +38,17 @@ THREADS_PER_FIGURE_WORKER = 4
 # ~0.1 ms per marker (44 s and 92 MB for the 410k-point doublet 3D scatter); rasterised it is
 # 5 s and 0.3 MB, drawn at the savefig dpi like the PNG. Axes and text stay vector.
 RASTERIZE_MIN_ELEMENTS = 10_000
-# Float images with more samples than output pixels are block-averaged down to this many samples
-# per output pixel (per axis) in the pickled copy; the renderer antialiases the rest down to
-# output pixels. A 913 Mpx imshow otherwise pickles ~4 GB per figure and spends minutes in
-# _resample for PNG and PDF each. Integer, bool and label images and 'nearest'/'none'
-# interpolation are never reduced: averaging would change what they show.
+# Images with more samples than output pixels are block-averaged down to this many samples per
+# output pixel (per axis) in the pickled copy; the renderer antialiases the rest down to output
+# pixels. A 913 Mpx imshow otherwise pickles ~4 GB per figure and spends minutes in _resample for
+# PNG and PDF each. Float images are averaged as data. Integer and bool images are averaged as
+# the premultiplied RGBA that matplotlib itself resamples when it downsamples them (its 'rgba'
+# interpolation stage), so a label image blends its labels' colours, never showing the colour of
+# a mean label. Unreduced, the worker builds that float64 RGBA at full resolution: ~60 B/px per
+# render, 55 GB for a 913 Mpx mask. 'nearest'/'none' interpolation is never reduced.
 IMAGE_SAMPLES_PER_PIXEL = 4
+# Pixels per to_rgba call when an integer image is reduced: 8 MB of float64 RGBA per thread.
+RGBA_BLOCK_PIXELS = 1 << 18
 # Pickled figure bytes submitted but not yet written before save_figure blocks. Each blob is held
 # about twice (here and in the pipe to the worker). A single larger figure is still submitted.
 MAX_PENDING_BYTES = 2 * 1024**3
@@ -86,20 +91,50 @@ def _block_mean(a, k):
     return np.ma.masked_array(mean.astype(a.dtype), mask=count == 0)
 
 
+def _block_mean_rgba(image, a, k):
+    """k x k block means of the premultiplied RGBA of the 2-D integer image `a`, as straight RGBA.
+
+    image.to_rgba(a) is what matplotlib's 'rgba' interpolation stage resamples, after
+    premultiplying alpha. The mean is taken premultiplied, as that resampling is, then divided
+    back, so matplotlib's own premultiplication restores it. Rows are converted in blocks of whole
+    k-row strips on the thread budget, so the full-resolution RGBA never exists.
+    """
+    rows = k * max(1, RGBA_BLOCK_PIXELS // (k * a.shape[1]))
+    out = np.empty((-(-a.shape[0] // k), -(-a.shape[1] // k), 4), dtype=np.float32)
+    # builds the colormap's lookup table before the threads share it
+    image.to_rgba(a[:1, :1])
+
+    def block(s):
+        rgba = image.to_rgba(a[s])
+        rgba[..., :3] *= rgba[..., 3:]
+        out[s.start // k : -(-s.stop // k)] = _block_mean(rgba, k)
+
+    threads.map_slices(block, a.shape[0], rows, threads.budget())
+    alpha = out[..., 3:]
+    np.divide(out[..., :3], alpha, out=out[..., :3], where=alpha != 0)
+    return out
+
+
 def _reduced_images(fig, dpi):
-    """{id(per-pixel array): block-averaged copy} for float images far denser than the output.
+    """{id(per-pixel array): block-averaged copy} for images far denser than the output.
 
     Every per-pixel array of an image is reduced with the same blocks: the data (with its mask,
     and RGB(A) channels) and an array alpha. Extent (fixed by imshow), norm and clim are not
-    per-pixel and stay as they are. Only plain AxesImage: NonUniformImage/PcolorImage carry
-    per-pixel coordinate arrays and are left alone.
+    per-pixel and stay as they are. A 2-D integer or bool image is replaced by its block-averaged
+    RGBA (_block_mean_rgba); with an array alpha or the 'data' interpolation stage it is left
+    alone. Only plain AxesImage: NonUniformImage/PcolorImage carry per-pixel coordinate arrays
+    and are left alone.
     """
     reduced = {}
     for image in fig.findobj(lambda artist: type(artist) is AxesImage):
         a = image.get_array()
-        if not np.issubdtype(a.dtype, np.floating) or image.get_interpolation() in (
-            "nearest",
-            "none",
+        if image.get_interpolation() in ("nearest", "none"):
+            continue
+        as_rgba = not np.issubdtype(a.dtype, np.floating)
+        if as_rgba and (
+            a.ndim != 2
+            or np.ndim(image.get_alpha()) > 0
+            or image.get_interpolation_stage() == "data"
         ):
             continue
         # Display extent of the whole image through its own transform (world or pixel units,
@@ -111,7 +146,9 @@ def _reduced_images(fig, dpi):
             a.shape[0] / (abs(box.height) * scale),
         )
         k = int(round(samples_per_pixel / IMAGE_SAMPLES_PER_PIXEL, 6))  # display extents carry float noise
-        if k > 1:  # the norm keeps the vmin/vmax imshow took from the full array
+        if k > 1 and as_rgba:
+            reduced[id(a)] = _block_mean_rgba(image, a, k)
+        elif k > 1:  # the norm keeps the vmin/vmax imshow took from the full array
             reduced[id(a)] = _block_mean(a, k)
             alpha = image.get_alpha()
             if np.ndim(alpha) > 0:  # e.g. ovrlpy's signal-faded integrity map
