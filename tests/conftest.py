@@ -19,6 +19,7 @@ from spatialdata.models import Image2DModel, PointsModel, ShapesModel, TableMode
 from spatialdata.transformations import Identity, Scale
 
 from spoqc import helperfuncs
+from spoqc.core import threads
 
 LEGACY = Path(__file__).parent / "legacy"
 N_CELLS = 150
@@ -133,6 +134,17 @@ def _synthetic_sdata(rng: np.random.Generator) -> sd.SpatialData:
         images={"morphology_focus": image},
         tables={"table": table},
     )
+
+
+TEST_THREADS = 2
+
+
+@pytest.fixture(autouse=True, scope="session")
+def thread_budget():
+    """The -n budget code without a threads argument reads from core.threads.N. configure() cannot
+    run here (pytest has imported numpy), so the tests set N directly."""
+    if threads.N is None:
+        threads.N = TEST_THREADS
 
 
 @pytest.fixture(scope="session")

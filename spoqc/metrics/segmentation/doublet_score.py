@@ -7,6 +7,7 @@ import numpy as np
 from ... import helperfuncs
 from ... import _ovrlpy_fast
 from ...core import spatial, transcripts
+from spoqc.core.figures import save_figure
 
 # Initial doublet_distance of every cell, kept where no doublet is closer.
 NO_DOUBLET_DISTANCE = 100_000.0
@@ -65,6 +66,36 @@ def flag_cells_near_doublets(cell_xy, doublet_xy, distance_thresh, threads):
     _, distance = spatial.nearest(cell_xy, doublet_xy, threads)
     doublet = distance <= distance_thresh
     return doublet, doublet.astype(int), np.minimum(NO_DOUBLET_DISTANCE, distance)
+
+
+
+def downsample_transcript_layers(transcripts, layers=range(-2, 3), stride=100):
+    """Rows for the 3D depth scatter, one (x, y) pair per depth layer, plus the aspect ratio.
+
+    `transcripts` is ovrlpy's polars frame holding every transcript in the sample. It used
+    to be materialised in full with .to_pandas() purely to feed this plot, which then keeps
+    1/stride of it and reads only x and y. A tree-RSS trace measured that one call adding
+    ~48 GB in under 10 s on a 229,970-cell 5K-panel sample, taking the run to 217.79 GB and
+    past the memory budget.
+
+    Filtering and striding in polars first, converting only the surviving two columns, feeds
+    the scatter identical rows in identical order:
+      - pandas `.between(i, i + 1)` is inclusive at both ends, hence >= / <=
+      - the stride is applied AFTER the filter, so the same rows survive
+      - polars `filter` preserves row order, like a pandas boolean mask
+      - the ratio uses FULL-column maxima, not the downsampled subset
+
+    tests/test_doublet_3d_plot_equivalence.py asserts this against the original verbatim.
+    """
+    depth = transcripts['z'] - transcripts['z_center']
+    per_layer = []
+    for i in layers:
+        subset = transcripts.filter((depth >= i) & (depth <= i + 1))
+        # downsample the number of transcripts
+        subset = subset.gather_every(stride).select(['x', 'y']).to_pandas()
+        per_layer.append((i, subset))
+    ratio = transcripts["x"].max() / transcripts["y"].max()
+    return per_layer, ratio
 
 
 # window_sizes = for plotting. You can selected more windowsizes. This is just to zoom in or out for double plots.
@@ -134,29 +165,20 @@ def calc_doublet_score(
     plt.colorbar()
     plt.xlabel("x")
     plt.ylabel("y")
-    plt.savefig(f'{figure_path}/scatter_signal_integrity.png')
-    plt.savefig(f'{figure_path}/scatter_signal_integrity.pdf')
+    save_figure(plt.gcf(), f'{figure_path}/scatter_signal_integrity.png', f'{figure_path}/scatter_signal_integrity.pdf')
     plt.close()
 
-    transcripts_processed = ovrlp.transcripts.to_pandas()
     fig = plt.figure(figsize=(10, 10))
     ax = plt.subplot(111, projection="3d")
-    for i in range(-2, 3):
-        subset = transcripts_processed[
-            (transcripts_processed['z'] - transcripts_processed['z_center']).between(i, i + 1)
-        ]
-        # downsample the number of transcripts
-        subset = subset[::100]
-
+    per_layer, ratio = downsample_transcript_layers(ovrlp.transcripts)
+    for i, subset in per_layer:
         ax.scatter(subset["x"], subset["y"], i, s=1, alpha=0.1)
-    ratio = transcripts_processed["x"].max() / transcripts_processed["y"].max()
     ax.set_box_aspect([ratio, 1, 0.75])
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.set_zlabel("z")
     plt.tight_layout(pad=2)
-    plt.savefig(f'{figure_path}/scatter_signal_integrity_3d.png')
-    plt.savefig(f'{figure_path}/scatter_signal_integrity_3d.pdf')
+    save_figure(plt.gcf(), f'{figure_path}/scatter_signal_integrity_3d.png', f'{figure_path}/scatter_signal_integrity_3d.pdf')
     plt.close()
 
     # Integrity density plot
@@ -175,13 +197,11 @@ def calc_doublet_score(
     plt.ylabel("Density")
     plt.tight_layout()
 
-    plt.savefig(f'{figure_path}/histogram_signal_integrity_and_signal.png')
-    plt.savefig(f'{figure_path}/histogram_signal_integrity_and_signal.pdf')
+    save_figure(plt.gcf(), f'{figure_path}/histogram_signal_integrity_and_signal.png', f'{figure_path}/histogram_signal_integrity_and_signal.pdf')
     plt.close()
     fig = ovrlpy.plot_signal_integrity(ovrlp, signal_threshold=signal_threshold)
     plt.tight_layout()
-    plt.savefig(f'{figure_path}/spatial_signal_integrity_map.png')
-    plt.savefig(f'{figure_path}/spatial_signal_integrity_map.pdf')
+    save_figure(plt.gcf(), f'{figure_path}/spatial_signal_integrity_map.png', f'{figure_path}/spatial_signal_integrity_map.pdf')
     plt.close()
 
     if ( len(doublet_df) < num_doublet ):
@@ -199,8 +219,7 @@ def calc_doublet_score(
         )
         # Adjust layout to prevent overlap
         fig.tight_layout()
-        fig.savefig(f'{figure_path}/doublet_case_{i}_zoomed.png')
-        fig.savefig(f'{figure_path}/doublet_case_{i}_zoomed.pdf')
+        save_figure(fig, f'{figure_path}/doublet_case_{i}_zoomed.png', f'{figure_path}/doublet_case_{i}_zoomed.pdf')
 
         x, y = doublet_df.loc[doublet_case, ["x", "y"]]
         fig = ovrlpy.plot_region_of_interest(
@@ -210,8 +229,7 @@ def calc_doublet_score(
             window_size=window_sizes[1],
         )
         fig.tight_layout()
-        fig.savefig(f'{figure_path}/doublet_case_{i}.png')
-        fig.savefig(f'{figure_path}/doublet_case_{i}.pdf')
+        save_figure(fig, f'{figure_path}/doublet_case_{i}.png', f'{figure_path}/doublet_case_{i}.pdf')
 
     # Link doublet detection back to spatial.
     # Based on a distance parameter say if a cell might be a doublet or not.

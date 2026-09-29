@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 from typing import Any
 
 from .. import helperfuncs
+from spoqc.core.figures import save_figure
 from ..core import transcripts
 
 # data from https://www.gencodegenes.org/human/
@@ -111,8 +112,7 @@ def transcriptqc(sdata, figure_path, annotation_file):
     fig.update_traces(textinfo="label+value+percent entry", textfont=dict(size=18))
     fig.update_traces(marker_colors=["lightblue","lightgreen","red","green","red"])
     fig.write_html(f"{figure_path}/transcript_location_pie.html")
-    fig.write_image(f"{figure_path}/transcript_location_pie.png", scale=3)
-    fig.write_image(f"{figure_path}/transcript_location_pie.pdf", scale=3)
+    save_figure(fig, f"{figure_path}/transcript_location_pie.png", f"{figure_path}/transcript_location_pie.pdf", scale=3)
 
     gene_biotype_dict = parse_gtf(f"{annotation_file}")
 
@@ -131,8 +131,7 @@ def transcriptqc(sdata, figure_path, annotation_file):
     fig = go.Figure(data=[go.Pie(labels=df.index, values=df['count'], marker=dict(colors=df['colors']))])
     fig.update_traces(textfont=dict(size=18))
     fig.write_html(f"{figure_path}/transctipt_type_pie.html")
-    fig.write_image(f"{figure_path}/transctipt_type_pie.png", scale=3)
-    fig.write_image(f"{figure_path}/transctipt_type_pie.pdf", scale=3)
+    save_figure(fig, f"{figure_path}/transctipt_type_pie.png", f"{figure_path}/transctipt_type_pie.pdf", scale=3)
 
     df = frame.to_pandas()
 
@@ -210,8 +209,7 @@ def transcriptz(sdata: Any, figure_path: str) -> None:
     )
     helperfuncs.apply_general_plotly_layout(fig, True)
     figures.append(fig)
-    fig.write_image(f"{figure_path}/histogram_z_total.png", scale=3)
-    fig.write_image(f"{figure_path}/histogram_z_total.pdf", scale=3)
+    save_figure(fig, f"{figure_path}/histogram_z_total.png", f"{figure_path}/histogram_z_total.pdf", scale=3)
     timer.stop()
 
     # Create a histogram trace for each sample
@@ -270,8 +268,7 @@ def transcriptz(sdata: Any, figure_path: str) -> None:
     helperfuncs.apply_general_plotly_layout(fig, True)
 
     figures.append(fig)
-    fig.write_image(f"{figure_path}/histogram_z_all.png", scale=3)
-    fig.write_image(f"{figure_path}/histogram_z_all.pdf", scale=3)
+    save_figure(fig, f"{figure_path}/histogram_z_all.png", f"{figure_path}/histogram_z_all.pdf", scale=3)
 
     with open(f'{figure_path}/transcript_z.html', 'w') as f:
         for fig in figures:

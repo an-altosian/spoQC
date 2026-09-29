@@ -12,7 +12,10 @@ def main(argv: list[str] | None = None) -> None:
     threads.configure(
         DEV_TEST_THREADS if args.dev_test or args.step == "unittest" else args.threads
     )
-    from .cli import main as run  # heavy imports only after the thread budget is set
+    # Imported here, not at module level: spawned figure workers import this module as their
+    # __main__, and spoqc.cli takes ~20 s and ~700 MB to import. It also must come after
+    # threads.configure, which has to run before the heavy libraries load.
+    from .cli import main as run
 
     return run(args)
 

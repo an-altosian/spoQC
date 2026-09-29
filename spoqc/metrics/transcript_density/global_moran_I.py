@@ -5,6 +5,7 @@ import scipy.sparse as sp
 
 
 from ... import helperfuncs
+from spoqc.core.figures import save_figure
 from spoqc.core.moran import queen_weights
 
 # Vectorized Moran's I for all genes at once, given a shared sparse weights matrix.
@@ -64,8 +65,7 @@ def calculate_global_moran_I_values(sdata, figure_path, spoqc_tmp_folder):
     )
     helperfuncs.apply_general_plotly_layout(fig, True)
     fig.write_html(f"{figure_path}/contamination_global_morans_I.html")
-    fig.write_image(f"{figure_path}/contamination_global_morans_I.png", scale=3)
-    fig.write_image(f"{figure_path}/contamination_global_morans_I.pdf", scale=3)
+    save_figure(fig, f"{figure_path}/contamination_global_morans_I.png", f"{figure_path}/contamination_global_morans_I.pdf", scale=3)
 
     helperfuncs.df_to_parquet(data_sorted, 'ambient', spoqc_tmp_folder, [], 'genes')
     return data_sorted

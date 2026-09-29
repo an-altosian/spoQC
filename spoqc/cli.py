@@ -23,6 +23,7 @@ from spoqc import general
 from spoqc import hqr
 from spoqc import helperfuncs
 from spoqc import process_datasets
+from spoqc.core import figures
 from spoqc import folder_structure
 from spoqc import plot_config
 from spoqc import subworkflows
@@ -181,6 +182,18 @@ def main(args_ns: argparse.Namespace) -> None:
         print(f'Attribute Name: {attr_name}')
         print(f'Attribute Value: {attr_value}')
 
+    # Figures are written by worker processes while the main thread computes on; figures.start
+    # splits the thread budget between them and the compute (see spoqc.core.figures).
+    figures.start(CONST.THREADS)
+    try:
+        run(CONST)
+    except BaseException:
+        figures.abort()
+        raise
+    figures.stop()
+
+
+def run(CONST):
     # Seeds (!!! DO NOT CHANGE THIS SEED !!!)
     seed=123
     random.seed(seed)
@@ -593,6 +606,7 @@ def main(args_ns: argparse.Namespace) -> None:
     ###### FINAL REPORT ######
     ##########################
     # Low resources, fast
+    figures.wait()  # the report reads the figures
     if ( CONST.STEP in ['all', 'final_report'] ):
         subworkflows.final_report.create_final_report(CONST.FIGURE_PATH, stainings, CONST.GENERATE_REPORT_DOC, bool(CONST.ANNOTATION_FILE))
     print("[FINISH]")

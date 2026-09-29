@@ -1,7 +1,8 @@
-"""Differential tests: the per-pixel parquet writer and Moran's I vs the verbatim origin/dev code
+"""Differential tests: the per-pixel parquet writer, the histogram and Moran's I vs the verbatim origin/dev code
 they replace.
 
 - the parquet writer (core.parquet): helperfuncs.ddf_to_parquet, byte for byte;
+- the threaded histogram (helperfuncs.histogram): np.histogram;
 - Moran's I: tests/legacy/global_moran_I.py and tests/legacy/local_moran_I.py.
 Every comparison is exact: values, dtype and order.
 """
@@ -17,6 +18,7 @@ from conftest import assert_same_array, load_legacy, parquet_rows
 from libpysal.weights import KNN
 
 from legacy.parquet_writer import ddf_to_parquet  # origin/dev's writer, the reference for core.parquet
+from spoqc import helperfuncs
 from spoqc.core import parquet
 from spoqc.metrics.transcript_density import (
     global_moran_I,
@@ -50,6 +52,17 @@ class TestPrior:
             8,
             9,
         )
+
+
+class TestHistogram:
+    def test_counts_are_numpys_over_non_nan_values(self):
+        values = np.random.default_rng(2).normal(0, 1, 100_001)
+        values[::97] = np.nan
+        counts, edges = helperfuncs.histogram(values, 100)
+        finite = values[~np.isnan(values)]
+        expected_counts, expected_edges = np.histogram(finite, bins=100)
+        assert_same_array(counts, expected_counts, "counts")
+        assert_same_array(edges, expected_edges, "edges")
 
 
 class TestMoransI:

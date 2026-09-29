@@ -159,6 +159,7 @@ def test_spatial_variance_figures_match_legacy(monkeypatch, tmp_path):
     legacy = load_legacy("qc_model", "spoqc.subworkflows")
     monkeypatch.setattr(go.Figure, "write_image", lambda *a, **k: None)
     monkeypatch.setattr(go.Figure, "write_html", lambda *a, **k: None)
+    monkeypatch.setattr(qc_model, "save_figure", lambda *a, **k: None)
 
     rng = np.random.default_rng(11)
     n, n_pcs = 2500, 5
