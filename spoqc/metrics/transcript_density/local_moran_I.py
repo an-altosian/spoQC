@@ -4,9 +4,11 @@ import pandas as pd
 import concurrent.futures
 import scipy.sparse as sp
 
-from libpysal.weights import KNN
+from numba import njit
+from scipy.spatial import cKDTree
 
 from ... import helperfuncs
+from . import global_moran_I
 from ...core import groupreduce, spatial, transcripts
 
 # Cells within this distance of a cell form its Moran's I neighbourhood.
@@ -46,48 +48,94 @@ def fill_outside_from_nearest_inside(coords, feat, local_I, outside_mask, thread
     return local_I
 
 
-# Vectorized Moran-I for all genes in a neighborhood
-def moran_I_all_genes(X_dense: np.ndarray, w) -> np.ndarray:
+# libpysal.cg.kdtree.KDTree's leaf size, which libpysal's KNN.from_array builds its tree with
+KNN_LEAFSIZE = 10
+# Distance gaps at the k-th neighbour within this many relative ULPs take the KD-tree fallback. A
+# cell's min-distance collects about one rounding (<= 1 ULP of a value no larger than the
+# distance) per tree level, and a neighbourhood of <= 2,560 cells at leaf size 10 is <= 9 levels
+# deep; 64 is 7x that.
+KNN_TIE_ULPS = 64
+EPS = np.finfo(np.float64).eps
+
+
+@njit(nogil=True, fastmath=False)
+def _unambiguous_knn(coords, k, neighbours):
     """
-    X_dense: (n, num_genes) float array for selected cells
-    w: libpysal weights object
-    returns: (num_genes,) Moran's I per gene
+    For each point, its k nearest other points by squared distance (dx * dx + dy * dy, as
+    scipy's KD-tree computes it), ascending by position, into neighbours. Returns False, leaving
+    neighbours incomplete, when some point's (k + 1)-th and (k + 2)-th smallest distances (itself
+    included) are within KNN_TIE_ULPS relative ULPs of each other.
+
+    Only then can the KD-tree return another set: while a member is not found yet, the tree's
+    heap holds a non-member, so its bound is at least the (k + 2)-th distance, and pruning the
+    member takes a cell min-distance overestimated by more than that gap. scipy updates cell
+    min-distances incrementally (query.cxx, nodeinfo::update_side_distance), one rounding per
+    level; the ties and near-ties it could resolve differently go to libpysal's own query.
     """
-    n = X_dense.shape[0]
-    if n < 3:
-        return np.full((X_dense.shape[1],), -1.0, dtype=np.float32)
+    n = coords.shape[0]
+    d = np.empty(n)
+    for i in range(n):
+        for j in range(n):
+            dx = coords[i, 0] - coords[j, 0]
+            dy = coords[i, 1] - coords[j, 1]
+            d[j] = dx * dx + dy * dy
+        order = np.argsort(d, kind="mergesort")
+        if k + 1 < n and d[order[k + 1]] - d[order[k]] <= KNN_TIE_ULPS * EPS * d[order[k]]:
+            return False
+        # the k + 1 nearest hold the point itself (distance 0, no tie at the boundary)
+        chosen = np.sort(order[:k + 1])
+        t = 0
+        for j in chosen:
+            if j != i:
+                neighbours[i, t] = j
+                t += 1
+    return True
 
-    # ensure sparse CSR for W
-    # NOTE: w.sparse is typically CSR; w.transform='r' row-standardizes
-    w.transform = "r"
-    weights = w.sparse  # scipy sparse
 
-    # S0 for row-standardized weights is just sum(W)
-    row_standardized_weights = weights.sum()
-    if row_standardized_weights == 0:
-        return np.full((X_dense.shape[1],), -1.0, dtype=np.float32)
-
-    # center (do NOT standardize by std unless you want "z-scores"; Moran uses mean-centering)
-    z = X_dense - X_dense.mean(axis=0, keepdims=True)
-
-    # sparse matmul releases the GIL and is fast
-    z_weights = weights @ z
-
-    num = np.einsum("ij,ij->j", z, z_weights)         # sum over rows
-    den = np.einsum("ij,ij->j", z, z)
-
-    # protect against constant genes in the neighborhood
-    out = np.full((X_dense.shape[1],), -1.0, dtype=np.float32)
-    ok = den > 0
-    out[ok] = (n / row_standardized_weights) * (num[ok] / den[ok])
+@njit(nogil=True, fastmath=False)
+def _spatial_lag(neighbours, weight, z):
+    """weights @ z for the CSR matrix with `weight` at the sorted columns neighbours[i] of each row i,
+    summed as scipy's csr_matvecs sums (row by row, columns ascending, from 0)."""
+    out = np.zeros(z.shape)
+    for i in range(neighbours.shape[0]):
+        for jj in range(neighbours.shape[1]):
+            j = neighbours[i, jj]
+            for g in range(z.shape[1]):
+                out[i, g] += weight * z[j, g]
     return out
 
-# Choose a fast weights builder for points
-def build_weights(coords_subset: np.ndarray, k):
-    # fixed K neighbors
-    # Take Minimum of k (30) cells if there are that many cells.
-    w = KNN.from_array(coords_subset, k=k)  # tune k
-    return w
+
+class KNNWeights:
+    """
+    libpysal's KNN.from_array(coords, k=k) with w.transform = "r", its w.sparse matrix given
+    as `neighbours`, each point's k nearest other points in ascending position (the sorted
+    column indices of that CSR), all weighted 1.0 / k. .sum() and `@` give the CSR's values.
+
+    The k nearest come from a brute-force search, or, when a distance tie at the k-th neighbour
+    leaves the choice to the KD-tree, from libpysal's own query: the same scipy cKDTree
+    (leafsize 10), k + 1 points, and libpysal's self-drop.
+    """
+
+    def __init__(self, coords, k):
+        n = len(coords)
+        self.neighbours = np.empty((n, k), dtype=np.int64)
+        if not _unambiguous_knn(coords, k, self.neighbours):
+            _, indices = cKDTree(coords, KNN_LEAFSIZE).query(coords, k=k + 1, p=2)
+            # mask the point itself; a point with k + 1 other points at distance 0 (itself not
+            # among them) drops its (k + 1)-th instead
+            not_self_mask = indices != np.arange(n).reshape(-1, 1)
+            has_one_too_many = not_self_mask.sum(axis=1) == (k + 1)
+            not_self_mask[has_one_too_many, -1] &= False
+            self.neighbours = np.sort(indices[not_self_mask].reshape(n, -1), axis=1)
+        self.weight = 1.0 / (sum([1.0] * k) * 1.0)  # libpysal's row standardisation
+
+    def sum(self):
+        # scipy sums a CSR as np.sum of its data array
+        return np.full(self.neighbours.size, self.weight).sum()
+
+    def __matmul__(self, z):
+        return _spatial_lag(self.neighbours, self.weight, z)
+
 
 # Core computation per i (no sdata['table'] slicing, no GeoPandas)
 # This calculate all Moran'Is for all genes for one cell.
@@ -105,8 +153,8 @@ def compute_one_i(i: int, num_genes, distance_matrix, center_cell_ids, coords_al
     # If rna_X is sparse: this makes a dense (m, num_genes) only for the neighborhood (cheap-ish).
     X_sub = rna_X[idx, :].toarray() if sp.issparse(rna_X) else np.asarray(rna_X[idx, :])
 
-    w = build_weights(coords, k)
-    I_all = moran_I_all_genes(X_sub, w)
+    # m > k = 30 cells, and each row of the weights sums to 1: the neighbourhood is never degenerate.
+    I_all = global_moran_I.moran_I_all_genes(X_sub, KNNWeights(coords, k), fill=-1.0, dtype=np.float32)
     return center_cell_id, I_all
 
 

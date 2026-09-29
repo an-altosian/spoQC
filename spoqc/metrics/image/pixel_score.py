@@ -1,6 +1,5 @@
 import concurrent.futures
 
-import dask.dataframe as dd
 import numpy as np
 import pandas as pd
 
@@ -9,28 +8,6 @@ from ...core import groupreduce
 
 STRUCTURE_METRICS = ['edge_strength', 'energy', 'relevance', 'entropy']
 ANTI_STRUCTURE_METRICS = ['homogenity', 'uniformity']
-
-
-def row_divisions(n_rows, chunk_size):
-    # Dask divisions of an n_rows pixel frame cut every chunk_size rows (the last one is inclusive).
-    return [*range(0, n_rows, chunk_size), n_rows - 1]
-
-
-def pixel_frame(columns, divisions):
-    """Dask DataFrame over in-memory per-pixel columns, partitioned at `divisions`.
-
-    With origin/dev's divisions, the parquet part files come out the same as from
-    origin/dev's pixel frame.
-    """
-    n_rows = len(next(iter(columns.values())))
-    stops = [*divisions[1:-1], n_rows]
-
-    def partition(i):
-        start, stop = divisions[i], stops[i]
-        return pd.DataFrame({name: values[start:stop] for name, values in columns.items()},
-                            index=pd.RangeIndex(start, stop))
-
-    return dd.from_map(partition, list(range(len(stops))), meta=partition(0).iloc[:0], divisions=list(divisions))
 
 
 def summed_score(features, feature_names, metrics, chunk_size, threads):

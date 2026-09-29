@@ -20,7 +20,7 @@ import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import concurrent.futures
 
-from typing import NamedTuple, Dict, List, Union, Tuple, Any, Optional, Sequence
+from typing import NamedTuple, Dict, List, Union, Tuple, Any, Optional
 from anndata import AnnData
 from tqdm import tqdm
 from sklearn.metrics import silhouette_score
@@ -29,7 +29,7 @@ from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 from scipy.ndimage import gaussian_filter
 from scipy.stats import norm
-from spoqc.core import figures
+from spoqc.core import figures, threads
 from spoqc.core.figures import save_figure
 
 class ImageDimStruct(NamedTuple):
@@ -1011,9 +1011,28 @@ def test_resolutions_leiden(
     return win_res
 
 
-def min_max_normalize(array):
-    array = np.array(array)
-    return (array - np.min(array)) / (np.max(array) - np.min(array))
+def min_max_normalize(array, workers=1, out=None):
+    """
+    (x - min) / (max - min), with min and max over the non-NaN values (NaN stays NaN) and a zero
+    range divided by 1, so a constant array scales to 0. Elementwise work runs on `workers`
+    threads; `out` may be `array` itself to scale it in place.
+    """
+    array = np.asarray(array)
+    # slices of at most 2^18 values keep the temporaries small (2 MB of float64)
+    step = max(min(-(-len(array) // workers), 1 << 18), 1)
+    bounds = threads.map_slices(lambda s: (np.nanmin(array[s]), np.nanmax(array[s])), len(array), step, workers)
+    data_min = np.nanmin([b[0] for b in bounds])
+    data_range = np.nanmax([b[1] for b in bounds]) - data_min
+    if data_range == 0:
+        data_range = 1
+    if out is None:
+        out = np.empty(array.shape, dtype=np.true_divide(array[:1] - data_min, data_range).dtype)
+
+    def scale(s):
+        out[s] = (array[s] - data_min) / data_range
+
+    threads.map_slices(scale, len(array), step, workers)
+    return out
 
 
 def get_stuff_from_image_around_coords(pixel_coords, radius, xy_image_feature, imagedim):
@@ -1153,72 +1172,36 @@ def df_to_parquet(df, prefix, spoqc_tmp_folder, obs_columns, suffix):
     return(obs_columns + new_columns)
 
 
-def ddf_to_parquet(
-    ddf: "dd.DataFrame",
-    prefix: str,
-    spoqc_tmp_folder: str,
-    obs_columns: Sequence[str],
-    suffix: str,
-    *,
-    partition_on: str = None,
-    include_index: bool = True,
-    overwrite: bool = True,
-    engine: str = "pyarrow",
-) -> List[str]:
-    """
-    Write the non-observation columns of a Dask DataFrame to Parquet.
-
-    Parameters
-    ----------
-    df : dask.dataframe.DataFrame
-        Input Dask DataFrame.
-    prefix, spoqc_tmp_folder, suffix : str
-        Used to form the output path: {spoqc_tmp_folder}/{prefix}_output_{suffix}.parquet
-    obs_columns : Sequence[str]
-        Columns to exclude from the Parquet write.
-    include_index : bool, default True
-        Whether to persist the index into Parquet.
-    partition_on: str, default None
-        Give partition key to make use of directory based disk partition.
-    overwrite : bool, default True
-        Overwrite existing output.
-    engine : str, default "pyarrow"
-        Parquet engine.
-
-    Returns
-    -------
-    List[str]
-        Column order list: obs_columns + new_columns
-    """
-    path = f"{spoqc_tmp_folder}/{prefix}_output_{suffix}"
-
-    # Compute columns to write (Dask-friendly; no data materialized)
-    obs_set = set(obs_columns)
-    new_columns = [c for c in ddf.columns if c not in obs_set]
-
-    # Select only needed columns lazily
-    write_ddf = ddf[new_columns]
-
-    # Write to Parquet (this triggers computation)
-    write_ddf.to_parquet(
-        path,
-        engine=engine,
-        write_index=include_index,
-        overwrite=overwrite,
-        partition_on=partition_on,
-        compute=True,
-    )
+def histogram(array, nbins):
+    """np.histogram of the non-NaN values of `array` into nbins equal bins over their range (the
+    bins sns.histplot(array, bins=nbins) draws), counted on core.threads.N threads."""
+    array = np.asarray(array)
+    value_range = (np.nanmin(array), np.nanmax(array))
+    workers = threads.budget()
+    counts = sum(threads.map_slices(
+        lambda rows: np.histogram(array[rows], bins=nbins, range=value_range)[0],
+        len(array), -(-len(array) // workers), workers,
+    ))
+    return counts, np.histogram_bin_edges(array[:0], bins=nbins, range=value_range)
 
 
 def plot_histogram_for_array(array, nbins, figure_path, title, suffix, t=None, std=None, nstds=1):
-    sns.histplot(array, bins=nbins)
+    if len(array):
+        # seaborn draws the counted bins, not every value (pixel arrays hold ~1e9 values)
+        counts, bin_edges = histogram(array, nbins)
+        sns.histplot(
+            {"value": bin_edges[:-1], "count": counts}, x="value", weights="count",
+            bins=nbins, binrange=(bin_edges[0], bin_edges[-1]),
+        )
+    else:
+        sns.histplot(array, bins=nbins)
+        bin_edges = np.histogram_bin_edges(array, bins=nbins)
     plt.title(title)
     plt.xlabel("value")
     plt.ylabel("frequency")
     if t:
         plt.axvline(x=t, color='red', linestyle='-', alpha=1.0)  # Adding vertical lines
     if t is not None and std is not None:
-        bin_edges = np.histogram_bin_edges(array, bins=nbins)
         bin_width = np.mean(np.diff(bin_edges))
         scale = len(array) * bin_width  # rescale pdf to match histplot's count-based y-axis
         x = np.linspace(np.min(array), np.max(array), 200)

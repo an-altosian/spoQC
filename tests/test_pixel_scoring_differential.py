@@ -19,8 +19,10 @@ from dask_ml.preprocessing import MinMaxScaler
 
 import numba
 import reference_pixel_scoring_db00d98 as reference
+from legacy.parquet_writer import ddf_to_parquet  # origin/dev's writer, the reference for core.parquet
 from spoqc import helperfuncs
-from spoqc.core import groupreduce
+from spoqc.core import groupreduce, parquet
+from spoqc.priors.hqtr import ac_or_qv
 from spoqc.image_analysis import pixel_scoring_dask
 from spoqc.metrics.image import pixel_score, utility
 
@@ -202,13 +204,18 @@ class TestScores:
             assert bits_equal(pixel_score.summed_score(features, names, metrics, chunk_size, 3), expected)
 
     @pytest.mark.parametrize("kind", ["spread", "constant", "tiny"])
-    def test_min_max_matches_dask_ml(self, kind):
+    def test_min_max_is_the_unified_formula(self, kind):
+        """helperfuncs.min_max_normalize: (x - min) / range, a zero range scaling to 0; within a few
+        ULP of the dask_ml MinMaxScaler arithmetic pixel scoring used before (docs/perf/hqtr_ambient.md)."""
         rng = np.random.default_rng(6)
         values = {"spread": rng.gamma(1.0, 3e-3, 30_001), "constant": np.full(30_001, 0.37),
                   "tiny": 1e-300 * rng.random(30_001)}[kind]
+        got = helperfuncs.min_max_normalize(values, 3)
+        data_range = values.max() - values.min()
+        assert bits_equal(got, (values - values.min()) / (data_range if data_range else 1))
         ddf = dd.from_dask_array(da.from_array(values, chunks=4_000), columns=["p"])
-        expected = MinMaxScaler().fit_transform(ddf[["p"]]).iloc[:, 0].compute().to_numpy()
-        assert bits_equal(pixel_scoring_dask.min_max_normalize(values), expected)
+        before = MinMaxScaler().fit_transform(ddf[["p"]]).iloc[:, 0].compute().to_numpy()
+        assert np.max(np.abs(got - before)) <= 4 * np.finfo(np.float64).eps
 
 
 def run_pixel_qc(impl, root, modality, image, seed, **extra):
@@ -238,8 +245,14 @@ def prepare(tmp_path, modality, shape, rng):
         os.symlink(tmp_path / "shared" / metrics_rel, root / "tmp" / metrics_rel)
         if modality == "hqtr":
             for prior, values in priors.items():
-                ddf = dd.from_dask_array(da.from_array(values, chunks=3_001), columns=[f"norm_p_{prior}_density"])
-                helperfuncs.ddf_to_parquet(ddf, "hqtr", str(root / "tmp"), [], f"{prior}_prob")
+                if run == "ref":  # origin/dev's prior layout: 10,000-row parts, which also split its mask_raw
+                    ddf = dd.from_dask_array(
+                        da.from_array(values, chunks=pixel_scoring_dask.ORIGIN_PRIOR_PART_ROWS), columns=[f"norm_p_{prior}_density"])
+                    ddf_to_parquet(ddf, "hqtr", str(root / "tmp"), [], f"{prior}_prob")
+                else:  # the qv/ac steps' layout now
+                    parquet.write_parts(f"{root}/tmp/hqtr_output_{prior}_prob", len(values),
+                                        parquet.columns_of({f"norm_p_{prior}_density": values}),
+                                        range(0, len(values), ac_or_qv.PART_ROWS), 2)
         roots[run] = str(root)
     return roots, arrays, suffix, metrics_rel
 
@@ -247,7 +260,11 @@ def prepare(tmp_path, modality, shape, rng):
 @pytest.mark.parametrize("shape", [(151, 203), (1, 14_001)], ids=["151x203", "one_row_partition"])
 @pytest.mark.parametrize("modality", ["hqpr", "hqtr"])
 @pytest.mark.parametrize("handoff", ["parquet", "in_memory"])
-def test_start_pixel_qc_is_bit_identical_to_reference(tmp_path, modality, handoff, shape, monkeypatch):
+def test_start_pixel_qc_matches_reference_up_to_the_unified_min_max(tmp_path, modality, handoff, shape, monkeypatch):
+    """mask_raw against origin/dev: the same part files and columns; the clusters, scores,
+    intensity and GMM density are bit-identical. norm_p_pixel_score and what follows from it
+    (beliefs, mask) differ only by the min-max formula (priors.gaussian): within 2 ULP of 1,
+    and the mask only where a belief is that close to 0.5."""
     # 14_001 pixels = 2 chunks of 7_000 plus a one-row partition (a repeated last division).
     rng = np.random.default_rng(7)
     image = make_image(shape, rng)
@@ -266,20 +283,36 @@ def test_start_pixel_qc_is_bit_identical_to_reference(tmp_path, modality, handof
         extra["background_intensity"] = utility.estimate_background_intensity(np.flipud(image))[0]
     beliefs = run_pixel_qc(pixel_scoring_dask, roots["new"], modality, image, seed=11, **extra)
 
-    assert_same_parquet_dir(f"{roots['ref']}/tmp/{prefix}_output_mask_raw", f"{roots['new']}/tmp/{prefix}_output_mask_raw")
-    assert bits_equal(beliefs, expected_beliefs)
+    ref_parts = parquet_parts(f"{roots['ref']}/tmp/{prefix}_output_mask_raw")
+    new_parts = parquet_parts(f"{roots['new']}/tmp/{prefix}_output_mask_raw")
+    assert list(ref_parts) == list(new_parts)
+    belief, mask = f"{prefix}_beliefs", f"{prefix}_mask"
+    prior_columns = {"norm_p_pixel_score", "pixel_score_mask", belief, mask}
+    for f in ref_parts:
+        ref_table, new_table = ref_parts[f], new_parts[f]
+        assert ref_table.schema.equals(new_table.schema, check_metadata=True), f
+        for name in ref_table.column_names:
+            a, b = ref_table.column(name).to_numpy(), new_table.column(name).to_numpy()
+            if name not in prior_columns:
+                assert bits_equal(a, b), (f, name)
+            elif a.dtype.kind == "f":
+                assert np.max(np.abs(a - b)) <= 2 * np.finfo(np.float64).eps, (f, name)
+        for flag, value in ((mask, belief), ("pixel_score_mask", "norm_p_pixel_score")):
+            if flag not in ref_table.column_names:  # hqpr: beliefs are the pixel score itself
+                continue
+            flipped = ref_table.column(flag).to_numpy() != new_table.column(flag).to_numpy()
+            near = np.abs(ref_table.column(value).to_numpy()[flipped] - 0.5) <= 2 * np.finfo(np.float64).eps
+            assert near.all(), (f, flag)
+    assert np.max(np.abs(beliefs - expected_beliefs)) <= 2 * np.finfo(np.float64).eps
     assert helperfuncs.PIXEL_FEATURES == {}
     labels = pq.read_table(f"{roots['new']}/tmp/{prefix}_output_mask_raw").column("cluster").to_numpy()
     assert len(np.unique(labels)) > 10  # the clustering is not degenerate
 
 
 @pytest.mark.parametrize("chunk_size", [7_000, 50_000])
-def test_pixel_frame_partitions_match_origin_dev_frame(chunk_size):
-    """The cluster-mean groupby gets exactly origin/dev's partitions (values, dtypes, index).
-
-    The means themselves are not compared: origin/dev's dask groupby-mean (a disk shuffle whose
-    combine order follows task completion) is not deterministic in its last bits, run to run.
-    """
+def test_mask_raw_parts_match_origin_dev_frame(tmp_path, chunk_size):
+    """write_parts at chunk_size starts writes origin/dev's frame's part files (the cluster-mean
+    groupby's partitions), byte for byte."""
     rng = np.random.default_rng(8)
     n = 200_003
     clusters = rng.integers(0, 100, n).astype(np.int32)
@@ -291,14 +324,10 @@ def test_pixel_frame_partitions_match_origin_dev_frame(chunk_size):
     ref_ddf = ref_ddf.assign(cluster=da.from_array(clusters, chunks=chunk_size))
     ref_ddf = ref_ddf.assign(s_score=da.from_array(s_score, chunks=chunk_size), as_score=da.from_array(as_score, chunks=chunk_size))
     ref_ddf = ref_ddf.assign(intensity=da.from_array(intensity, chunks=chunk_size))
-    frame = pixel_score.pixel_frame({'cluster': clusters, 's_score': s_score, 'as_score': as_score, 'intensity': intensity},
-                                    pixel_score.row_divisions(n, chunk_size))
-    assert frame.divisions == ref_ddf.divisions
-    for i in range(ref_ddf.npartitions):
-        expected, got = ref_ddf.partitions[i].compute(), frame.partitions[i].compute()
-        assert got.index.equals(expected.index), i
-        for column in expected.columns:
-            assert bits_equal(got[column].to_numpy(), expected[column].to_numpy()), (i, column)
+    ddf_to_parquet(ref_ddf, "hqpr_0", str(tmp_path), [], "old")
+    columns = {'cluster': clusters, 's_score': s_score, 'as_score': as_score, 'intensity': intensity}
+    parquet.write_parts(f"{tmp_path}/hqpr_0_output_new", n, parquet.columns_of(columns), range(0, n, chunk_size), 3)
+    assert_same_parquet_dir(f"{tmp_path}/hqpr_0_output_old", f"{tmp_path}/hqpr_0_output_new")
 
 
 class TestGroupSum:
