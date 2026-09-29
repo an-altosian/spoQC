@@ -81,8 +81,8 @@ def start_pixel_mask_refinement(
     # physical row order returned by .compute()/round-tripped through parquet.
     columns = {
         f"{prefix}_beliefs": beliefs_raw,
-        f"{prefix}_beliefs_smoothed": beliefs[:].flatten(),
-        f"{prefix}_mask_smoothed": labels[:].flatten(),
+        f"{prefix}_beliefs_smoothed": beliefs.ravel(),
+        f"{prefix}_mask_smoothed": labels.ravel(),
     }
     # origin/dev's parts: dd.from_pandas(npartitions=ceil(n / chunk_size))
     n_rows = len(beliefs_raw)
