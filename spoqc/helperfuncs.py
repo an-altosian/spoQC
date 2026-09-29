@@ -29,7 +29,7 @@ from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 from scipy.ndimage import gaussian_filter
 from scipy.stats import norm
-from spoqc.core import figures, threads
+from spoqc.core import figures, parquet, raster, threads
 from spoqc.core.figures import save_figure
 
 class ImageDimStruct(NamedTuple):
@@ -137,36 +137,37 @@ PIXEL_FEATURES = {}
 FEATURE_COPY_ROWS = 1 << 22  # rows per threaded copy of a handed-off column
 
 
+def _copy_rows(source, target, workers):
+    """target[:] = source (cast to target's dtype), FEATURE_COPY_ROWS rows at a time on `workers` threads."""
+    threads.map_slices(lambda rows: target.__setitem__(rows, source[rows]), len(source), FEATURE_COPY_ROWS, workers)
+
+
 def read_pixel_features(tmp_files, threads):
     """Stack per-pixel metric files into one (n_pixels, n_files) float32 matrix, column j = tmp_files[j].
 
     A column comes from PIXEL_FEATURES when structure analysis ran in this process, else from its
-    parquet, read by row group on `threads` threads. The matrix is Fortran-ordered so filling one
-    column touches only that column's pages, and each handed-off column is freed once copied.
+    parquet (column `name` of `{name}_output_{suffix}.parquet`, as nparr_to_parquet writes it),
+    read by row group on `threads` threads. The matrix is Fortran-ordered so filling one column
+    touches only that column's pages, and each handed-off column is freed once copied.
     """
-    n_rows = pq.ParquetFile(tmp_files[0]).metadata.num_rows
-    for tmp_file in tmp_files:
+    def n_pixels(tmp_file):
         column = PIXEL_FEATURES.get(os.path.abspath(tmp_file))
-        n_file = pq.ParquetFile(tmp_file).metadata.num_rows if column is None else len(column)
+        return raster.pixel_rows(tmp_file) if column is None else len(column)
+
+    n_rows = n_pixels(tmp_files[0])
+    for tmp_file in tmp_files:
+        n_file = n_pixels(tmp_file)
         if n_file != n_rows:
             raise ValueError(f"[ERROR] {tmp_file} has {n_file} pixels, {tmp_files[0]} has {n_rows}")
     features = np.empty((n_rows, len(tmp_files)), dtype=np.float32, order='F')
-    row_blocks = [slice(start, start + FEATURE_COPY_ROWS) for start in range(0, n_rows, FEATURE_COPY_ROWS)]
-    with concurrent.futures.ThreadPoolExecutor(threads) as pool:
-        for j, tmp_file in enumerate(tmp_files):
-            column = PIXEL_FEATURES.pop(os.path.abspath(tmp_file), None)
-            if column is None:
-                metadata = pq.ParquetFile(tmp_file).metadata
-                starts = np.cumsum([0] + [metadata.row_group(i).num_rows for i in range(metadata.num_row_groups)])
-
-                def read_row_group(i, tmp_file=tmp_file, starts=starts, j=j):
-                    values = pq.ParquetFile(tmp_file).read_row_group(i, use_threads=False).column(0).to_numpy()
-                    features[starts[i]:starts[i + 1], j] = values
-
-                list(pool.map(read_row_group, range(metadata.num_row_groups)))
-            else:
-                list(pool.map(lambda rows, column=column, j=j: features.__setitem__((rows, j), column[rows]), row_blocks))
-            del column
+    for j, tmp_file in enumerate(tmp_files):
+        column = PIXEL_FEATURES.pop(os.path.abspath(tmp_file), None)
+        if column is None:
+            name = os.path.basename(tmp_file).split('_output_')[0]
+            raster.read_pixel_columns(tmp_file, [name], n_rows, threads, out={name: features[:, j]})
+        else:
+            _copy_rows(column, features[:, j], threads)
+        del column
     return features
 
 
@@ -843,14 +844,17 @@ def plot_pixels(
         flip=False
 ):
 
+    dpi = 300
     plt.figure(figsize=(12, 6))
     plt.title(title)
 
     if ( flip ):
         image = np.flipud(image)
 
-    plt.imshow(
+    figures.imshow(
+        plt.gca(),
         image , # I need to flip the image
+        dpi=dpi,
         cmap=cmap,
         extent=[imagedim.bb_xmin, imagedim.bb_xmax, imagedim.bb_ymin, imagedim.bb_ymax], # get the bounding box
         aspect='equal'
@@ -868,7 +872,7 @@ def plot_pixels(
     if ( legend_dict ):
         add_manual_legend(legend_dict, points)
 
-    save_figure(plt.gcf(), f'{figure_path}/imageplot_{suffix}.png', f'{figure_path}/imageplot_{suffix}.pdf', bbox_inches='tight', dpi=300)
+    save_figure(plt.gcf(), f'{figure_path}/imageplot_{suffix}.png', f'{figure_path}/imageplot_{suffix}.pdf', bbox_inches='tight', dpi=dpi)
     plt.close()
 
 
@@ -1173,10 +1177,19 @@ def read_sdata_parquet_tmp_files(sdata, spoqc_tmp_folder, suffix):
         sdata['table'].obs = sdata['table'].obs.join(tmp_data, how='left')
 
 def nparr_to_parquet(np_arr, prefix, spoqc_tmp_folder, suffix):
+    """Write a per-pixel metric column as the parquet directory {prefix}_output_{suffix}.parquet
+    (parts of core.parquet.PART_ROWS rows, written in parallel; each part is the file pq.write_table
+    writes for its rows) and hand a float32 copy to pixel scoring (PIXEL_FEATURES)."""
     outfile = f"{spoqc_tmp_folder}/{prefix}_output_{suffix}.parquet"
-    table = pa.Table.from_arrays([pa.array(np_arr)], names=[prefix])
-    pq.write_table(table, outfile)
-    PIXEL_FEATURES[os.path.abspath(outfile)] = np.asarray(np_arr, dtype=np.float32)
+    workers = threads.budget()
+    parquet.write_parts(outfile, len(np_arr), parquet.columns_of({prefix: np_arr}),
+                        range(0, len(np_arr), parquet.PART_ROWS), workers, dask_index=False)
+    if np_arr.dtype == np.float32:
+        column = np_arr
+    else:
+        column = np.empty(len(np_arr), dtype=np.float32)
+        _copy_rows(np_arr, column, workers)
+    PIXEL_FEATURES[os.path.abspath(outfile)] = column
 
 def df_to_parquet(df, prefix, spoqc_tmp_folder, obs_columns, suffix):
     outfile = f"{spoqc_tmp_folder}/{prefix}_output_{suffix}.parquet"

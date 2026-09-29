@@ -164,6 +164,43 @@ def test_nulls_in_one_part(tmp_path, type_, null_part):
     assert np.isnan(new["v"]).sum() == 2
 
 
+def test_out_is_filled_by_casting_assignment(tmp_path):
+    """read_pixel_features' call: one column into a column of an F-ordered float32 matrix, the
+    values the old reader returns cast to float32 (NaN kept); other columns are still allocated."""
+    n_rows = 3 * 500 + 17
+    write_pixel_parts(f"{tmp_path}/d", n_rows, range(0, n_rows, 500), seed=9)
+    features = np.zeros((n_rows, 3), dtype=np.float32, order="F")
+    got = raster.read_pixel_columns(
+        f"{tmp_path}/d", ["beliefs", "label"], n_rows, 3, out={"beliefs": features[:, 1]}
+    )
+    assert np.shares_memory(got["beliefs"], features)
+    assert features[:, 1].tobytes() == read_pixel_column(f"{tmp_path}/d", "beliefs", 3).astype(np.float32).tobytes()
+    assert not features[:, [0, 2]].any()
+    assert got["label"].tobytes() == read_pixel_column(f"{tmp_path}/d", "label", 3).tobytes()
+
+
+@pytest.mark.parametrize("type_", [pa.float32(), pa.float64()])
+def test_float_nulls_into_out_are_nan(tmp_path, type_):
+    pq.write_table(pa.table({"v": pa.array([1.5, None, 3.0], type=type_)}), f"{tmp_path}/f.parquet")
+    out = np.empty(3, dtype=np.float32)
+    raster.read_pixel_columns(f"{tmp_path}/f.parquet", ["v"], 3, 2, out={"v": out})
+    assert out[0] == 1.5 and np.isnan(out[1]) and out[2] == 3.0
+
+
+@pytest.mark.parametrize("type_", [pa.int8(), pa.int64(), pa.uint16()])
+def test_integer_nulls_into_out_raise(tmp_path, type_):
+    pq.write_table(pa.table({"v": pa.array([1, None, 3], type=type_)}), f"{tmp_path}/i.parquet")
+    with pytest.raises(ValueError, match="nulls in the integer column v"):
+        raster.read_pixel_columns(f"{tmp_path}/i.parquet", ["v"], 3, 2, out={"v": np.empty(3, dtype=np.float32)})
+
+
+@pytest.mark.parametrize("shape", [(2,), (4,), (3, 1)])
+def test_out_of_the_wrong_shape_raises(tmp_path, shape):
+    pq.write_table(pa.table({"v": pa.array([1.0, 2.0, 3.0])}), f"{tmp_path}/s.parquet")
+    with pytest.raises(ValueError, match="has shape"):
+        raster.read_pixel_columns(f"{tmp_path}/s.parquet", ["v"], 3, 2, out={"v": np.empty(shape)})
+
+
 @pytest.mark.parametrize("n_rows", [12 * 40 - 1, 12 * 40 + 1])
 def test_a_wrong_row_count_raises(tmp_path, n_rows):
     write_pixel_parts(f"{tmp_path}/d", 12 * 40, range(0, 12 * 40, 40), seed=6)
@@ -192,13 +229,18 @@ MUTANTS = {
     "one dtype for all": ("np.dtype(type_.to_pandas_dtype())", "np.dtype(np.float64)"),
     "no integer null promotion": ("        if rows:  # pandas'", "        if False:  # pandas'"),
     "nulls left as fill values": ("out[column][np.concatenate(rows)] = np.nan", "pass"),
+    "out ignored": (
+        "column: given[column] if column in given else np.empty(n_rows, dtype=dtypes[column])",
+        "column: np.empty(n_rows, dtype=dtypes[column])",
+    ),
+    "integer nulls cast into out": ('if kind in "iu" and column in given:', "if False:"),
 }
 
 
 def mutant_differs(tmp_path, module):
     """True when the module's reader differs from the old one on a spoQC-like directory (parts
     of several row groups, more than 10 parts) or on nulls, or fails to raise on too few rows
-    or on parts that disagree on a type."""
+    or on parts that disagree on a type, or mishandles `out` (columns of a preallocated matrix)."""
     n_rows = 2 * 3_001 + 29 * 500
     os.makedirs(f"{tmp_path}/d")
     rng = np.random.default_rng(8)
@@ -220,6 +262,23 @@ def mutant_differs(tmp_path, module):
             old = read_pixel_column(path, column, 4)
             if new[column].dtype != old.dtype or new[column].tobytes() != old.tobytes():
                 return True
+    # out: columns of an F-ordered float32 matrix, filled by casting assignment
+    features = np.full((n_rows, 2), -1, dtype=np.float32, order="F")
+    out = {"mask": features[:, 0], "beliefs": features[:, 1]}
+    try:
+        got = module.read_pixel_columns(f"{tmp_path}/d", ["mask", "beliefs"], n_rows, 3, out=out)
+    except Exception:
+        return True
+    for j, column in enumerate(["mask", "beliefs"]):
+        expected = read_pixel_column(f"{tmp_path}/d", column, 4).astype(np.float32)
+        if got[column] is not out[column] or features[:, j].tobytes() != expected.tobytes():
+            return True
+    try:  # an integer column with nulls cannot be promoted in place
+        module.read_pixel_columns(f"{tmp_path}/n", ["v"], 480, 3, out={"v": np.empty(480, dtype=np.float32)})
+    except ValueError:
+        pass
+    else:
+        return True
     os.makedirs(f"{tmp_path}/t")
     pq.write_table(pa.table({"v": pa.array([1, 2], type=pa.int8())}), f"{tmp_path}/t/part.0.parquet")
     pq.write_table(pa.table({"v": pa.array([3, 4], type=pa.int64())}), f"{tmp_path}/t/part.1.parquet")

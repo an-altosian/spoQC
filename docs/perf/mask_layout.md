@@ -71,7 +71,8 @@ Write (`write_parts`, all columns, 4 threads), wall and peak-RSS increase over t
 - the read is decode-bound (flat from 1 M to 8 M rows) and the write is flat from 1 M rows;
 - 218 parts at 913 Mpx keep 4 x 30 threads busy, which 8 M-row parts (109) would not;
 - the write's extra memory is one part per thread in flight: +0.34 GB at 4 threads, about +2.5 GB at 30 threads (extrapolated), against about +1.9 GB at 1 M rows;
-- perf/round2-writes-figures writes the metric parquets in 1 << 22-row parts (`METRIC_PART_ROWS`), so one constant can serve both.
+- the per-pixel metric parquets (`helperfuncs.nparr_to_parquet`, perf/round2-writes-figures) use the same `parquet.PART_ROWS`: one constant serves both.
+  The hqtr qv/ac prior parquets keep their own, separately approved layout (`priors.hqtr.ac_or_qv.PART_ROWS = 1_000_000`).
 
 ## Before and after (4 threads)
 
@@ -87,7 +88,8 @@ Full slide = 912,953,648 pixels; the full-slide columns are linear extrapolation
 | hqtr mask_raw files / size | 6,400 / 983 MB | 16 / 758 MB | 91,296 / 14.0 GB | 218 / 10.8 GB |
 
 hqcr's single 913 M-row file (871 row groups), `hqcr_mask`, measured at full size: 0.89-0.91 s at 2.3 cores before, 0.45-0.47 s at 3.7-3.8 cores now.
-Peak RSS of the reads is unchanged within 0.3 GB (the output arrays dominate).
+Peak RSS of the reads is unchanged within 0.3 GB (the output arrays dominate), measured on the new layout only.
+A stale tmp folder in the old layout is different: `read_pixel_columns` keeps every part's footer in its `metas` list, about 34 KB per file, so the 91,296-file hqtr mask_raw holds about 3.1 GB of footers during the read.
 
 The row-group reader is slower than the scanner on the old 10,000-row layout (2.3 s against 1.2 s per 64 M rows: per-file Python overhead).
 spoQC no longer writes that layout; a tmp folder from an older spoQC is still read correctly, just slower.
@@ -99,4 +101,4 @@ spoQC no longer writes that layout; a tmp folder from an older spoQC is still re
 - `tests/test_mask_layout.py::test_production_part_size_is_several_row_groups`: real PART_ROWS parts have 4 row groups and read back exactly.
 - `tests/test_pixel_scoring_differential.py`: `start_pixel_qc`'s mask_raw against origin/dev's pipeline, row for row, in 5,000-row parts; `write_parts` at 3,000 to 4,194,304-row parts against origin/dev's frame, byte for byte per row, schema included.
 - `tests/test_hqtr_ambient_differential.py`: the refinement's mask_smoothed_raw layout against `dd.from_pandas` + origin/dev's writer.
-- `tests/test_read_pixel_columns_differential.py`: the reader against the verbatim 1cd6406 reader on every layout, at 1, 2 and 7 threads; 8 reader mutants (part order, row-group order, first row group only, row count check, type check, dtype, null promotion, null values) are caught.
+- `tests/test_read_pixel_columns_differential.py`: the reader against the verbatim 1cd6406 reader on every layout, at 1, 2 and 7 threads; 10 reader mutants (part order, row-group order, first row group only, row count check, type check, dtype, null promotion, null values, `out` ignored, integer nulls cast into `out`) are caught.

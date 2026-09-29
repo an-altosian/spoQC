@@ -37,6 +37,7 @@ from test_bounding_boxes_equivalence import (
 )  # noqa: E402
 
 from spoqc import helperfuncs  # noqa: E402
+from spoqc.core import figures  # noqa: E402
 from spoqc.image_analysis import bounding_boxes  # noqa: E402
 
 START = 10500
@@ -80,7 +81,7 @@ def measured(label, func, trace=False):
 def without_figures(module, sdata, figure_path, tmp, modality, imagedim, dim_x, dim_y, threads, **kwargs):
     extra = () if module is ref else (threads,)
     with contextlib.ExitStack() as stack:
-        for owner, name in ((helperfuncs, "plot_pixels"), (plt, "imshow"), (plt, "plot"), (module, "save_figure")):
+        for owner, name in ((helperfuncs, "plot_pixels"), (plt, "imshow"), (figures, "imshow"), (plt, "plot"), (module, "save_figure")):
             stack.enter_context(mock.patch.object(owner, name, lambda *a, **k: None))
         module.define_bounding_boxes(sdata, figure_path, tmp, modality, IMAGE_TYPE, RESOLUTION, dim_x, dim_y,
                                      imagedim, "raw", *extra, **kwargs)

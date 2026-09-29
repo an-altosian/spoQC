@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from numba import njit, prange
 
 from .. import helperfuncs
+from spoqc.core import figures
 from spoqc.core.figures import save_figure
 
 # -------- Numba kernels (pure compute; no I/O) --------
@@ -244,7 +245,7 @@ def visualize_markov_calculation(average_cell_probability_image, labels, figure_
 
     plt.subplot(1, 3, 1)
     plt.title("Predicted Probabilities")
-    plt.imshow(average_cell_probability_image, cmap='viridis')
+    figures.imshow(plt.gca(), average_cell_probability_image, cmap='viridis')
     plt.colorbar(fraction=0.046, pad=0.04)
     if ( flip ):
         plt.gca().invert_yaxis()
@@ -252,14 +253,14 @@ def visualize_markov_calculation(average_cell_probability_image, labels, figure_
     plt.subplot(1, 3, 2)
     t = 0.6
     plt.title(f"Predicted Probabilities (binary > {t})")
-    plt.imshow((average_cell_probability_image > t).astype(np.uint8), cmap='gray')
+    figures.imshow(plt.gca(), (average_cell_probability_image > t).astype(np.uint8), cmap='gray')
     helperfuncs.add_manual_legend(legend_dict={"high Q": "#FFFFFF", "low Q": "#000000"})
     if ( flip ):
         plt.gca().invert_yaxis()
 
     plt.subplot(1, 3, 3)
     plt.title("Inferred Labels (LBP + Early Stop)")
-    plt.imshow(labels, cmap='gray')
+    figures.imshow(plt.gca(), labels, cmap='gray')
     helperfuncs.add_manual_legend(legend_dict={"mask": "#FFFFFF", "low Q": "#000000"})
     if ( flip ):
         plt.gca().invert_yaxis()

@@ -37,10 +37,19 @@ def _part_files(path):
     return [os.path.join(path, n) for n in names]
 
 
-def read_pixel_columns(path, columns, n_rows, threads):
+def pixel_rows(path):
+    """The number of rows of a per-pixel parquet (file or directory), from the footers alone."""
+    return sum(pq.ParquetFile(file).metadata.num_rows for file in _part_files(path))
+
+
+def read_pixel_columns(path, columns, n_rows, threads, *, out=None):
     """Read columns of a per-pixel parquet (a single file, or a dask directory of part.N.parquet)
     into 1-D numpy arrays of n_rows values each, in the row order dask.dataframe.read_parquet
     returns, as {column: array}.
+
+    out: {column: preallocated 1-D array of n_rows values} (any subset of `columns`, e.g. a column
+    of an F-ordered matrix) to fill instead of allocating; values are cast into it by assignment,
+    and the returned dict holds those arrays.
 
     The footers are read on `threads` threads, then every row group is decoded once for all
     `columns` (pyarrow releases the GIL while decoding) and copied into the preallocated arrays,
@@ -51,8 +60,9 @@ def read_pixel_columns(path, columns, n_rows, threads):
     Nulls come out as dask 2026.1 returns them: NaN in a float column, and a null anywhere in an
     integer column promotes the whole column to float64 with NaN. Raises when there are no part
     files, when a part's type for a column differs from the first part's, when a non-numeric
-    column holds nulls (dask would return an object array), or when the files do not hold
-    exactly n_rows rows.
+    column holds nulls (dask would return an object array), when the files do not hold exactly
+    n_rows rows, or when an integer column read into `out` holds nulls (it cannot be promoted in
+    place).
     """
     files = _part_files(path)
     metas = map_slices(lambda i: pq.read_metadata(files[i.start]), len(files), 1, threads)
@@ -71,9 +81,14 @@ def read_pixel_columns(path, columns, n_rows, threads):
     starts = np.concatenate([[0], np.cumsum(sizes, dtype=np.int64)])
     if starts[-1] != n_rows:
         raise ValueError(f"{path} holds {starts[-1]} rows, {n_rows} expected")
+    given = {} if out is None else out
+    for column, array in given.items():
+        if column not in types or array.shape != (n_rows,):
+            raise ValueError(f"out[{column!r}] has shape {array.shape}, not a ({n_rows},) column of {columns}")
+    dtypes = {column: np.dtype(type_.to_pandas_dtype()) for column, type_ in types.items()}
     out = {
-        column: np.empty(n_rows, dtype=np.dtype(type_.to_pandas_dtype()))
-        for column, type_ in types.items()
+        column: given[column] if column in given else np.empty(n_rows, dtype=dtypes[column])
+        for column in columns
     }
     null_rows = {column: [] for column in columns}  # integer columns: rows to set NaN at the end
 
@@ -87,7 +102,12 @@ def read_pixel_columns(path, columns, n_rows, threads):
         for column in columns:
             values = table.column(column)
             if values.null_count:
-                kind = out[column].dtype.kind
+                kind = dtypes[column].kind
+                if kind in "iu" and column in given:
+                    raise ValueError(
+                        f"{values.null_count} nulls in the integer column {column} of {path}, "
+                        f"read into a preallocated {out[column].dtype} array"
+                    )
                 if kind in "iu":
                     null_rows[column].append(
                         start + np.flatnonzero(values.is_null().to_numpy(zero_copy_only=False))
@@ -95,9 +115,9 @@ def read_pixel_columns(path, columns, n_rows, threads):
                     values = values.fill_null(0)
                 elif kind != "f":
                     raise ValueError(
-                        f"{values.null_count} nulls in the {out[column].dtype} column {column} of {path}"
+                        f"{values.null_count} nulls in the {types[column]} column {column} of {path}"
                     )
-            out[column][start:stop] = values.to_numpy()  # float nulls: NaN
+            out[column][start:stop] = values.to_numpy()  # float nulls: NaN; cast into `out`
 
     map_slices(read, len(pieces), 1, threads)
     for column, rows in null_rows.items():
