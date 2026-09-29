@@ -1,6 +1,6 @@
 """Differential tests: hqcr's clustering (core.knn.neighbors, no UMAP) vs the verbatim original.
 
-`original_clustering_for_hqcr` is copied verbatim from spoQC origin/dev db00d98
+`original_clustering_for_hqcr` is copied verbatim (then line-wrapped by ruff format) from spoQC origin/dev db00d98
 (subworkflows/hqcr.py). The original also ran sc.tl.umap, whose X_umap nothing in hqcr reads;
 every other output (the kNN distances and connectivities, .uns['neighbors'], the Leiden labels,
 numpy's global RNG state) must be bit-identical, dtypes included.
