@@ -32,8 +32,15 @@ _REAL_TITLE = plt.title
 IMAGEDIM = helperfuncs.ImageDimStruct(0, 0, DIM_Y, DIM_X)
 
 
-def _write_inputs(tmp, rng, binary=True, n_parts=7):
+def _write_inputs(tmp, rng, binary=True, n_parts=7, nan_beliefs=False):
     n = DIM_X * DIM_Y
+
+    def beliefs(values):
+        """With nan_beliefs, NaN (stored as null) in scattered pixels and in the last rows only (one part)."""
+        if nan_beliefs:
+            values[rng.random(n) < 0.01] = np.nan
+            values[-50:] = np.nan
+        return values
 
     def mask(dtype):
         values = rng.integers(0, 2, n) if binary else rng.integers(-1, 3, n)
@@ -45,7 +52,7 @@ def _write_inputs(tmp, rng, binary=True, n_parts=7):
     ]:
         pd.DataFrame(
             {
-                f"hqcr_beliefs{suf}": rng.random(n).astype(bdtype),
+                f"hqcr_beliefs{suf}": beliefs(rng.random(n).astype(bdtype)),
                 f"hqcr_mask{suf}": mask(mdtype),
             }
         ).to_parquet(f"{tmp}/hqcr_output_mask{suf}_raw.parquet")
@@ -53,7 +60,7 @@ def _write_inputs(tmp, rng, binary=True, n_parts=7):
             frame = pd.DataFrame(
                 {
                     "cluster": rng.integers(0, 5, n).astype(np.int32),
-                    f"{prefix}_beliefs{suf}": rng.random(n),
+                    f"{prefix}_beliefs{suf}": beliefs(rng.random(n)),
                     f"{prefix}_mask{suf}": mask(np.int64),
                 }
             )
@@ -148,6 +155,17 @@ def test_every_number_handed_to_the_figures_matches(monkeypatch, inputs, threads
     assert len(old) == len(new) > 0
     for i, (a, b) in enumerate(zip(old, new)):
         assert a == b, f"call {i}: {a[:2]}"
+
+
+def test_nan_beliefs_match_too(monkeypatch, tmp_path):
+    """Null beliefs (NaN in the frames hqcr/hqpr/hqtr write) reach the figures as NaN, as in origin/dev."""
+    _write_inputs(tmp_path, np.random.default_rng(6), nan_beliefs=True)
+    old, new = _compare(monkeypatch, tmp_path, 4)
+    assert len(old) == len(new) > 0
+    for i, (a, b) in enumerate(zip(old, new)):
+        assert a == b, f"call {i}: {a[:2]}"
+    hists = [np.frombuffer(c[2], dtype=c[1]) for c in new if c[0] == "hist"]
+    assert hists and all(np.isnan(h).any() for h in hists), "every belief histogram must see NaN"
 
 
 def test_non_binary_masks_match_too(monkeypatch, tmp_path):

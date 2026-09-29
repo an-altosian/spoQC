@@ -27,9 +27,11 @@ def read_pixel_column(path, column, threads):
     """Read one column of a per-pixel parquet (a single file, or a dask directory of part.N.parquet)
     into a 1-D numpy array in the row order dask.dataframe.read_parquet returns.
 
-    Row groups are decoded in parallel into one preallocated array. Raises when there are no part
-    files, when the parts disagree on the column's type, or when the column holds nulls (dask would
-    turn those into NaN; here they have no numpy value).
+    Row groups are decoded in parallel into one preallocated array. Nulls come out as dask 2026.1
+    returns them: NaN in a float column, and a null anywhere in an integer column promotes the whole
+    column to float64 with NaN (the parquet statistics' null counts decide this up front). Raises when
+    there are no part files, when the parts disagree on the column's type, or when a non-numeric
+    column holds nulls (dask would return an object array).
     """
     if os.path.isdir(path):
         # dask orders its part files naturally (part.2 before part.10), not lexicographically.
@@ -42,17 +44,24 @@ def read_pixel_column(path, column, threads):
             raise FileNotFoundError(f"no .parquet part files in {path}")
     else:
         files = [path]
-    pieces, sizes, types = [], [], set()
+    pieces, sizes, types, nulls = [], [], set(), 0
     for file in files:
         meta = pq.ParquetFile(file)
         types.add(meta.schema_arrow.field(column).type)
+        index = meta.schema_arrow.get_field_index(column)
         for group in range(meta.metadata.num_row_groups):
             pieces.append((file, group))
             sizes.append(meta.metadata.row_group(group).num_rows)
+            nulls += meta.metadata.row_group(group).column(index).statistics.null_count
     if len(types) != 1:
         raise ValueError(f"parts of {path} disagree on the type of {column}: {sorted(map(str, types))}")
+    dtype = np.dtype(types.pop().to_pandas_dtype())
+    if nulls and dtype.kind in "iu":
+        dtype = np.dtype(np.float64)  # pandas' integer-with-NaN promotion, as dask applies it
+    elif nulls and dtype.kind != "f":
+        raise ValueError(f"{nulls} nulls in the {dtype} column {column} of {path}")
     starts = np.concatenate([[0], np.cumsum(sizes, dtype=np.int64)])
-    out = np.empty(int(starts[-1]), dtype=np.dtype(types.pop().to_pandas_dtype()))
+    out = np.empty(int(starts[-1]), dtype=dtype)
 
     def read(i):
         file, group = pieces[i]
@@ -61,9 +70,7 @@ def read_pixel_column(path, column, threads):
             .read_row_group(group, columns=[column], use_threads=False)
             .column(0)
         )
-        if values.null_count:
-            raise ValueError(f"{values.null_count} nulls in {column} of {file}, row group {group}")
-        out[starts[i] : starts[i + 1]] = values.to_numpy()
+        out[starts[i] : starts[i + 1]] = values.to_numpy()  # nulls: NaN (float64 for integers)
 
     with ThreadPoolExecutor(threads) as executor:
         list(executor.map(read, range(len(pieces))))

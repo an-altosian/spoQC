@@ -544,9 +544,27 @@ def test_read_pixel_column_raises_on_an_empty_directory(tmp_path):
         raster.read_pixel_column(str(tmp_path), "v", 2)
 
 
-def test_read_pixel_column_raises_on_nulls(tmp_path):
-    pq.write_table(pa.table({"v": pa.array([1, None, 3], type=pa.int8())}), f"{tmp_path}/part.0.parquet")
-    with pytest.raises(ValueError, match="1 nulls"):
+@pytest.mark.parametrize("type_", [pa.int8(), pa.uint8(), pa.int32(), pa.int64(), pa.float32(), pa.float64()])
+@pytest.mark.parametrize("null_part", [0, 1])
+def test_read_pixel_column_matches_dask_on_nulls(tmp_path, type_, null_part):
+    """Nulls in one part only: NaN for floats; integers become float64 everywhere, as dask returns them."""
+    parts = [[1, 0, 1, 1], [0, 1, 1]]
+    parts[null_part][1] = None
+    for i, values in enumerate(parts):
+        pq.write_table(
+            pa.table({"v": pa.array(values, type=type_)}), f"{tmp_path}/part.{i}.parquet", row_group_size=2
+        )
+    expected = dd.read_parquet(str(tmp_path), columns=["v"], engine="pyarrow")["v"].compute().to_numpy()
+    assert np.isnan(expected).sum() == 1
+    for threads in (1, 2):
+        actual = raster.read_pixel_column(str(tmp_path), "v", threads)
+        assert actual.dtype == expected.dtype and actual.tobytes() == expected.tobytes()
+
+
+def test_read_pixel_column_raises_on_nulls_in_a_bool_column(tmp_path):
+    """dask would return an object array of True/False/None; no pixel column is boolean."""
+    pq.write_table(pa.table({"v": pa.array([True, None], type=pa.bool_())}), f"{tmp_path}/part.0.parquet")
+    with pytest.raises(ValueError, match="1 nulls in the bool column"):
         raster.read_pixel_column(str(tmp_path), "v", 2)
 
 
