@@ -11,26 +11,31 @@ abort() cancels queued writes on the error path. Only figure files go through he
 data is touched.
 
 CPU budget: each worker is one render process plus, for plotly, its kaleido Chromium; the two run
-in turn, so a worker keeps about one core busy. The caller sizes the pool as a share of its
-thread budget (spoqc.cli: THREADS // THREADS_PER_FIGURE_WORKER) and should give the compute
-threads the rest.
+in turn, so a worker keeps about one core busy. start(threads) gets the run's whole budget.
+While the main thread computes, THREADS // THREADS_PER_FIGURE_WORKER background workers write
+figures. While it is blocked in wait() or stop(), a drain pool of the remaining workers takes
+figures too, so the figure pools use every core of the budget.
 """
 
+import collections
 import io
+import logging
 import multiprocessing
 import os
 import pickle
+import threading
 import warnings
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor
-from concurrent.futures import wait as wait_futures
+from concurrent.futures import ProcessPoolExecutor
 
 import matplotlib
 import numpy as np
 from matplotlib.collections import Collection, QuadMesh
+from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
 from matplotlib.image import AxesImage
+from numba import njit, prange
 
-from spoqc.core import threads
+from spoqc.core import figure_worker
 
 # Threads of the run's budget per figure worker (see the CPU budget note above).
 THREADS_PER_FIGURE_WORKER = 4
@@ -38,12 +43,15 @@ THREADS_PER_FIGURE_WORKER = 4
 # ~0.1 ms per marker (44 s and 92 MB for the 410k-point doublet 3D scatter); rasterised it is
 # 5 s and 0.3 MB, drawn at the savefig dpi like the PNG. Axes and text stay vector.
 RASTERIZE_MIN_ELEMENTS = 10_000
-# Float images with more samples than output pixels are block-averaged down to this many samples
-# per output pixel (per axis) in the pickled copy; the renderer antialiases the rest down to
-# output pixels. A 913 Mpx imshow otherwise pickles ~4 GB per figure and spends minutes in
-# _resample for PNG and PDF each. Integer, bool and label images and 'nearest'/'none'
-# interpolation are never reduced: averaging would change what they show.
-IMAGE_SAMPLES_PER_PIXEL = 4
+# Float images with more samples than output pixels are reduced to this many samples per output
+# pixel (per axis) in the pickled copy; the renderer antialiases the rest down to output pixels.
+# Scalar images are coloured first and the colours averaged (premultiplied by alpha), which is
+# what matplotlib's own antialiasing of a downsampled image does. Measured on the hqtr metric set
+# at full-scale density (18 samples/px) against matplotlib's full-resolution render: 1.1-3.3/255
+# mean at 2 samples/px, where averaging the values instead was up to 11/255 (LBP) even at 4.
+# Integer, bool and label images, 'nearest'/'none' interpolation and norms other than a plain
+# linear Normalize are never reduced.
+IMAGE_SAMPLES_PER_PIXEL = 2
 # Pickled figure bytes submitted but not yet written before save_figure blocks. Each blob is held
 # about twice (here and in the pipe to the worker). A single larger figure is still submitted.
 MAX_PENDING_BYTES = 2 * 1024**3
@@ -54,8 +62,19 @@ warnings.filterwarnings(
     "ignore", message="Rasterization of .*Path3DCollection", category=UserWarning
 )
 
-_executor = None
-_pending = {}  # future -> pickled bytes
+_executor = None  # background pool: figures written while the main thread computes
+_drain = None  # the rest of the thread budget: used only while the main thread waits
+_workers = {}  # pool -> worker count
+# Figures are handed to a pool only when it has an idle worker, so none sits in a busy pool's
+# queue when wait() opens the drain pool. Guarded by _state; pool callbacks run on the pools'
+# manager threads.
+_held = collections.deque()  # (the _write arguments, pickled bytes), not yet in a pool
+_in_flight = {}  # future -> (pool, pickled bytes)
+_reserved = {}  # token -> (pool, pickled bytes): taken from _held, being submitted
+_errors = []  # worker exceptions, re-raised on the main thread
+_draining = False
+_state = threading.Condition(threading.RLock())
+_log = logging.getLogger(__name__)
 
 
 def _element_count(collection):
@@ -86,21 +105,82 @@ def _block_mean(a, k):
     return np.ma.masked_array(mean.astype(a.dtype), mask=count == 0)
 
 
-def _reduced_images(fig, dpi):
-    """{id(per-pixel array): block-averaged copy} for float images far denser than the output.
+@njit(parallel=True)
+def _colour_blocks(data, mask, has_mask, vmin, vmax, clip, lut, n_colours, k):
+    """Colour each sample like Normalize + Colormap.__call__, then average k x k blocks of
+    premultiplied colours (the last block per axis may be smaller); returns uint8 RGBA."""
+    rows, cols = data.shape
+    out_rows, out_cols = (rows + k - 1) // k, (cols + k - 1) // k
+    out = np.empty((out_rows, out_cols, 4), np.uint8)
+    i_under, i_over, i_bad = n_colours, n_colours + 1, n_colours + 2
+    for block_row in prange(out_rows):
+        acc = np.zeros((out_cols, 4))
+        count = np.zeros(out_cols)
+        for r in range(block_row * k, min(rows, block_row * k + k)):
+            for c in range(cols):
+                x = data[r, c]
+                if (has_mask and mask[r, c]) or np.isnan(x):
+                    i = i_bad
+                else:
+                    v = 0.0 if vmin == vmax else (x - vmin) / (vmax - vmin)
+                    if clip:
+                        v = min(max(v, 0.0), 1.0)
+                    v *= n_colours
+                    if v == n_colours:
+                        v = n_colours - 1
+                    if v < 0:
+                        i = i_under
+                    elif v >= n_colours:
+                        i = i_over
+                    else:
+                        i = int(v)
+                j = c // k
+                alpha = lut[i, 3]
+                acc[j, 0] += lut[i, 0] * alpha
+                acc[j, 1] += lut[i, 1] * alpha
+                acc[j, 2] += lut[i, 2] * alpha
+                acc[j, 3] += alpha
+                count[j] += 1
+        for j in range(out_cols):
+            weight = acc[j, 3]
+            for ch in range(3):
+                out[block_row, j, ch] = int(acc[j, ch] / weight * 255 + 0.5) if weight > 0 else 0
+            out[block_row, j, 3] = int(weight / count[j] * 255 + 0.5)
+    return out
 
-    Every per-pixel array of an image is reduced with the same blocks: the data (with its mask,
-    and RGB(A) channels) and an array alpha. Extent (fixed by imshow), norm and clim are not
-    per-pixel and stay as they are. Only plain AxesImage: NonUniformImage/PcolorImage carry
-    per-pixel coordinate arrays and are left alone.
+
+def _colour_average(image, k):
+    """Block-averaged uint8 RGBA of a scalar image, through its own norm and colormap."""
+    a, cmap, norm = image.get_array(), image.get_cmap(), image.norm
+    lut = np.vstack([cmap(np.arange(cmap.N)), [cmap.get_under(), cmap.get_over(), cmap.get_bad()]])
+    has_mask = np.ma.getmask(a) is not np.ma.nomask
+    mask = np.ma.getmaskarray(a) if has_mask else np.zeros((1, 1), bool)
+    data = np.ma.getdata(a)
+    if data.dtype not in (np.float32, np.float64):  # numba has no float16 / longdouble
+        data = data.astype(np.float64)
+    return _colour_blocks(data, mask, has_mask, float(norm.vmin), float(norm.vmax),
+                          bool(norm.clip), lut, cmap.N, k)
+
+
+def _reduced_images(fig, dpi):
+    """{id(per-pixel array): reduced copy} for float images far denser than the output.
+
+    Every per-pixel array of an image is reduced with the same blocks: the data (scalar data is
+    coloured and colour-averaged, RGB(A) data is averaged; masked samples count as the bad
+    colour or are excluded) and an array alpha. Extent (fixed by imshow), norm and clim are not
+    per-pixel; the colorbar keeps using the image's norm and colormap. Only plain AxesImage:
+    NonUniformImage/PcolorImage carry per-pixel coordinate arrays and are left alone.
     """
     reduced = {}
     for image in fig.findobj(lambda artist: type(artist) is AxesImage):
         a = image.get_array()
-        if not np.issubdtype(a.dtype, np.floating) or image.get_interpolation() in (
-            "nearest",
-            "none",
+        if (
+            not np.issubdtype(a.dtype, np.floating)
+            or image.get_interpolation() in ("nearest", "none")
+            or image.get_interpolation_stage() == "data"  # colours of resampled values, not averages
         ):
+            continue
+        if a.ndim == 2 and type(image.norm) is not Normalize:
             continue
         # Display extent of the whole image through its own transform (world or pixel units,
         # zoomed or translated alike), at the figure dpi; the output is at `dpi`.
@@ -112,7 +192,7 @@ def _reduced_images(fig, dpi):
         )
         k = int(round(samples_per_pixel / IMAGE_SAMPLES_PER_PIXEL, 6))  # display extents carry float noise
         if k > 1:  # the norm keeps the vmin/vmax imshow took from the full array
-            reduced[id(a)] = _block_mean(a, k)
+            reduced[id(a)] = _colour_average(image, k) if a.ndim == 2 else _block_mean(a, k)
             alpha = image.get_alpha()
             if np.ndim(alpha) > 0:  # e.g. ovrlpy's signal-faded integrity map
                 reduced[id(alpha)] = _block_mean(np.asarray(alpha, dtype=np.float64), k)
@@ -176,52 +256,179 @@ def save_figure(fig, *paths, exact=False, **kwargs):
     if _executor is None:
         _write(blob, rc, paths, exact, kwargs)
         return
-    for future in [f for f in _pending if f.done()]:
-        del _pending[future]
-        future.result()
-    while _pending and sum(_pending.values()) + len(blob) > MAX_PENDING_BYTES:
-        done, _ = wait_futures(_pending, return_when=FIRST_COMPLETED)
-        for future in done:
-            del _pending[future]
-            future.result()
-    _pending[_executor.submit(_write, blob, rc, paths, exact, kwargs)] = len(blob)
+    with _state:
+        _raise_worker_error()
+        while (_held or _in_flight) and _pending_bytes() + len(blob) > MAX_PENDING_BYTES:
+            _state.wait()
+            _raise_worker_error()
+        _held.append(((blob, rc, paths, exact, kwargs), len(blob)))
+        picks = _reserve()
+    _submit(picks)
 
 
-def start(workers):
-    """Open a pool of `workers` spawned processes for save_figure()."""
-    global _executor
-    # Each worker runs single-threaded: threads.configure(1) is the initializer. Unpickling it
-    # imports only spoqc.core.threads, so it runs before the worker imports numpy, polars or
-    # numba (the task function lives in this module, which is imported after it).
-    _executor = ProcessPoolExecutor(
+def _pending_bytes():
+    return sum(n for _, n in _held) + sum(n for _, n in (*_in_flight.values(), *_reserved.values()))
+
+
+def _log_errors(errors, what):
+    for error in errors:
+        _log.error("figure write failed (%s)", what, exc_info=error)
+
+
+def _raise_worker_error():
+    """Raise the first worker error; log the others, which would otherwise be lost."""
+    if _errors:
+        first, rest = _errors[0], _errors[1:]
+        _errors.clear()
+        _held.clear()  # the run fails: queued figures are not written
+        _log_errors(rest, "not re-raised: an earlier figure failed first")
+        raise first
+
+
+def _reserve():
+    """Under _state: take the held figures that fit an idle worker and reserve its slot (the
+    drain pool only while draining). Nothing is taken once a write has failed.
+
+    Returns (token, pool, item) for _submit(), which the caller runs after releasing _state.
+    """
+    picks = []
+    while _held and not _errors:
+        pools = [_executor] + ([_drain] if _draining and _drain is not None else [])
+        busy = collections.Counter(pool for pool, _ in (*_in_flight.values(), *_reserved.values()))
+        pool = next((p for p in pools if busy[p] < _workers[p]), None)
+        if pool is None:
+            break
+        item = _held.popleft()
+        token = object()
+        _reserved[token] = (pool, item[1])
+        picks.append((token, pool, item))
+    return picks
+
+
+def _submit(picks):
+    """Submit reserved figures. Must run WITHOUT _state held.
+
+    submit() takes the pool's shutdown lock, and a breaking pool holds that lock while its
+    futures' callbacks (_finished) take _state: holding _state here would invert that order.
+    A submit that fails puts its figure and the ones after it back, and records the error.
+    """
+    for n, (token, pool, (args, nbytes)) in enumerate(picks):
+        try:
+            future = pool.submit(_write, *args)
+        except Exception as error:  # e.g. BrokenProcessPool
+            with _state:
+                for t, _, item in reversed(picks[n:]):
+                    del _reserved[t]
+                    _held.appendleft(item)
+                _errors.append(error)
+                _state.notify_all()
+            return
+        with _state:
+            del _reserved[token]
+            _in_flight[future] = (pool, nbytes)
+        future.add_done_callback(_finished)
+
+
+def _finished(future):
+    """Done-callback, on a pool's manager thread (or the submitting thread, if already done).
+
+    A pool that breaks runs this for its futures while holding its own shutdown lock, so this
+    never calls submit() then: only a successful write hands out the next figure, and that
+    submit happens after _state is released. Failed and cancelled futures record and notify.
+    """
+    picks = []
+    with _state:
+        try:
+            del _in_flight[future]
+            if future.cancelled():
+                return
+            if future.exception() is not None:
+                _errors.append(future.exception())
+                return
+            picks = _reserve()
+        finally:
+            _state.notify_all()
+    _submit(picks)
+
+
+def _pool(workers):
+    # figure_worker.init runs each worker single-threaded and ends it when this process dies.
+    pool = ProcessPoolExecutor(
         max_workers=workers,
         mp_context=multiprocessing.get_context("spawn"),
-        initializer=threads.configure,
-        initargs=(1,),
+        initializer=figure_worker.init,
+        initargs=(os.getpid(),),
     )
+    _workers[pool] = workers
+    return pool
+
+
+def start(threads_budget):
+    """Open the pools for save_figure(); `threads_budget` is the run's thread count.
+
+    The drain pool's processes are started now, each with a no-op task from this module so it
+    imports matplotlib and the rest here, and wait() does not pay that start-up; they idle,
+    without figure data, until the main thread waits.
+    """
+    global _executor, _drain
+    background = max(1, threads_budget // THREADS_PER_FIGURE_WORKER)
+    _executor = _pool(background)
+    if threads_budget > background:
+        _drain = _pool(threads_budget - background)
+        for _ in range(threads_budget - background):
+            _drain.submit(_same, None)
 
 
 def wait():
-    """Block until every submitted figure is written; re-raise the first worker error."""
-    while _pending:
-        future = next(iter(_pending))
-        del _pending[future]
-        future.result()
+    """Block until every submitted figure is written; re-raise the first worker error.
+
+    The main thread is idle meanwhile, so held figures also go to the drain pool, and the
+    figure pools use the whole thread budget.
+    """
+    global _draining
+    with _state:
+        _draining = True
+        picks = _reserve()
+    try:
+        _submit(picks)
+        with _state:
+            while _in_flight or _reserved or (_held and not _errors):
+                _state.wait()
+    finally:
+        with _state:
+            _draining = False
+    with _state:
+        _raise_worker_error()
+
+
+def _close(cancel):
+    global _executor, _drain
+    pools = [p for p in (_executor, _drain) if p is not None]
+    _executor = _drain = None
+    for pool in pools:  # outside _state: shutdown joins the threads that run _finished
+        pool.shutdown(cancel_futures=cancel)
+        del _workers[pool]
 
 
 def stop():
-    """wait(), then shut the pool down."""
-    global _executor
+    """wait(), then shut the pools down."""
     try:
         wait()
     finally:
-        _executor.shutdown()
-        _executor = None
+        _close(cancel=False)
 
 
 def abort():
-    """On the error path: drop queued writes, let running ones finish, close the pool."""
-    global _executor
-    _pending.clear()
-    _executor.shutdown(cancel_futures=True)
-    _executor = None
+    """On the error path: drop queued writes, let running ones finish, close the pools.
+
+    Errors of those writes are logged, not kept for a later start().
+    """
+    with _state:
+        _held.clear()
+        dropped = list(_errors)
+        _errors.clear()
+    _close(cancel=True)
+    with _state:
+        dropped += _errors
+        _errors.clear()
+    _log_errors(dropped, "while aborting")
