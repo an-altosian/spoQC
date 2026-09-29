@@ -955,11 +955,17 @@ class TestImshow:
         save_figure(fig, tmp_path / name, bbox_inches="tight", dpi=self.DPI)
         return _png(tmp_path / name)
 
+    @pytest.mark.parametrize("layout", ["contiguous", "slice", "flipud"])
     @pytest.mark.parametrize("dtype", ["float", "uint8", "bool", "int64"])
-    def test_renders_as_matplotlib_and_save_figure_render_the_full_array(self, dtype, tmp_path):
-        data = self._data(dtype)
+    def test_renders_as_matplotlib_and_save_figure_render_the_full_array(self, dtype, layout, tmp_path):
+        # slice: a bounding-box subfigure of the full image; flipud: plot_pixels(flip=True)
+        data = {"contiguous": lambda a: a, "slice": lambda a: a[5:1495, 7:2240], "flipud": np.flipud}[layout](
+            self._data(dtype, shape=(1500, 2400))
+        )
         expected = self._png(self._figure(data, new=False)[0], tmp_path, "plain.png")
-        actual = self._png(self._figure(data, new=True)[0], tmp_path, "new.png")
+        fig, image = self._figure(data, new=True)
+        assert image.get_array().ndim == 3  # reduced by figures.imshow
+        actual = self._png(fig, tmp_path, "new.png")
         assert actual.shape == expected.shape
         assert np.abs(actual - expected).mean() <= 0.5 / 255, np.abs(actual - expected).mean()
 
