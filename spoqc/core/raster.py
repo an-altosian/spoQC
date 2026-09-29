@@ -3,7 +3,7 @@ dilate a binary mask with a disk, and box its 8-connected components.
 
 Every function is exact (bit-identical to the skimage/dask code it replaces; for dilate_disk while
 the disk radius is below about the image size, see there) and splits its work
-over `threads` (row blocks, parquet row groups or dask chunks); the numba kernels use the numba
+over `threads` (row blocks or dask chunks; parquet reads use the pyarrow pool); the numba kernels use the numba
 pool, which spoqc.core.threads.configure sizes (NUMBA_NUM_THREADS) to the run's thread budget.
 """
 
@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import dask
 import numpy as np
-import pyarrow.parquet as pq
+import pyarrow.dataset as ds
 from dask.utils import natural_sort_key
 from numba import njit, prange
 from scipy import ndimage as ndi
@@ -21,17 +21,31 @@ from scipy.sparse.csgraph import connected_components
 from skimage.morphology import disk
 
 _EIGHT_CONNECTED = np.ones((3, 3), dtype=bool)
+# Arrow scanner settings for read_pixel_columns, measured on 4 cores: hqcr's single 913M-row file
+# (871 row groups) scans at 2.35 cores with the defaults (131,072-row batches, 16 batches ahead)
+# and at 3.95 with these; the 10,000-row hqtr parts gain 1.78 s -> 1.54 s per 10,000 parts.
+_SCAN_BATCH_ROWS = 1 << 20
+_SCAN_BATCH_READAHEAD = 32
+_SCAN_FRAGMENT_READAHEAD = 16
 
 
-def read_pixel_column(path, column, threads):
-    """Read one column of a per-pixel parquet (a single file, or a dask directory of part.N.parquet)
-    into a 1-D numpy array in the row order dask.dataframe.read_parquet returns.
+def read_pixel_columns(path, columns, n_rows):
+    """Read columns of a per-pixel parquet (a single file, or a dask directory of part.N.parquet)
+    into 1-D numpy arrays of n_rows values each, in the row order dask.dataframe.read_parquet
+    returns, as {column: array}.
 
-    Row groups are decoded in parallel into one preallocated array. Nulls come out as dask 2026.1
-    returns them: NaN in a float column, and a null anywhere in an integer column promotes the whole
-    column to float64 with NaN (the parquet statistics' null counts decide this up front). Raises when
-    there are no part files, when the parts disagree on the column's type, or when a non-numeric
-    column holds nulls (dask would return an object array).
+    Every file is opened and decoded once for all `columns`, by Arrow's C++ dataset scanner on the
+    pyarrow CPU pool (sized by spoqc.core.threads.configure). spoQC's hqtr masks are 91,296
+    ten-thousand-row parts per directory, and at that size the cost is per file, not per byte:
+    opening each file from Python (a serial metadata pass, then again per column in a thread
+    pool) held the GIL for most of it and kept the pool near 1.9 of 4 cores. ScanBatches yields
+    batches in dataset (file list) order and row order within each file (arrow/dataset/scanner.h).
+
+    Nulls come out as dask 2026.1 returns them: NaN in a float column, and a null anywhere in an
+    integer column promotes the whole column to float64 with NaN. Raises when there are no part
+    files, when a part's type for a column differs from the first part's, when a non-numeric
+    column holds nulls (dask would return an object array), or when the files do not hold
+    exactly n_rows rows.
     """
     if os.path.isdir(path):
         # dask orders its part files naturally (part.2 before part.10), not lexicographically.
@@ -44,36 +58,55 @@ def read_pixel_column(path, column, threads):
             raise FileNotFoundError(f"no .parquet part files in {path}")
     else:
         files = [path]
-    pieces, sizes, types, nulls = [], [], set(), 0
-    for file in files:
-        meta = pq.ParquetFile(file)
-        types.add(meta.schema_arrow.field(column).type)
-        index = meta.schema_arrow.get_field_index(column)
-        for group in range(meta.metadata.num_row_groups):
-            pieces.append((file, group))
-            sizes.append(meta.metadata.row_group(group).num_rows)
-            nulls += meta.metadata.row_group(group).column(index).statistics.null_count
-    if len(types) != 1:
-        raise ValueError(f"parts of {path} disagree on the type of {column}: {sorted(map(str, types))}")
-    dtype = np.dtype(types.pop().to_pandas_dtype())
-    if nulls and dtype.kind in "iu":
-        dtype = np.dtype(np.float64)  # pandas' integer-with-NaN promotion, as dask applies it
-    elif nulls and dtype.kind != "f":
-        raise ValueError(f"{nulls} nulls in the {dtype} column {column} of {path}")
-    starts = np.concatenate([[0], np.cumsum(sizes, dtype=np.int64)])
-    out = np.empty(int(starts[-1]), dtype=dtype)
-
-    def read(i):
-        file, group = pieces[i]
-        values = (
-            pq.ParquetFile(file)
-            .read_row_group(group, columns=[column], use_threads=False)
-            .column(0)
-        )
-        out[starts[i] : starts[i + 1]] = values.to_numpy()  # nulls: NaN (float64 for integers)
-
-    with ThreadPoolExecutor(threads) as executor:
-        list(executor.map(read, range(len(pieces))))
+    dataset = ds.dataset(files, format="parquet")
+    types = {column: dataset.schema.field(column).type for column in columns}
+    out = {
+        column: np.empty(n_rows, dtype=np.dtype(type_.to_pandas_dtype()))
+        for column, type_ in types.items()
+    }
+    null_rows = {column: [] for column in columns}  # integer columns: rows to set NaN at the end
+    start, checked = 0, None
+    for tagged in dataset.scanner(
+        columns=columns,
+        use_threads=True,
+        batch_size=_SCAN_BATCH_ROWS,
+        batch_readahead=_SCAN_BATCH_READAHEAD,
+        fragment_readahead=_SCAN_FRAGMENT_READAHEAD,
+    ).scan_batches():
+        if tagged.fragment.path != checked:  # the first batch of each file
+            checked = tagged.fragment.path
+            schema = tagged.fragment.physical_schema
+            for column, type_ in types.items():
+                if schema.field(column).type != type_:
+                    raise ValueError(
+                        f"parts of {path} disagree on the type of {column}: "
+                        f"{type_} in {files[0]}, {schema.field(column).type} in {checked}"
+                    )
+        batch = tagged.record_batch
+        stop = start + batch.num_rows
+        if stop > n_rows:
+            raise ValueError(f"{path} holds more than the {n_rows} rows expected")
+        for column in columns:
+            values = batch.column(column)
+            if values.null_count:
+                kind = out[column].dtype.kind
+                if kind in "iu":
+                    null_rows[column].append(
+                        start + np.flatnonzero(values.is_null().to_numpy(zero_copy_only=False))
+                    )
+                    values = values.fill_null(0)
+                elif kind != "f":
+                    raise ValueError(
+                        f"{values.null_count} nulls in the {out[column].dtype} column {column} of {path}"
+                    )
+            out[column][start:stop] = values.to_numpy(zero_copy_only=False)  # float nulls: NaN
+        start = stop
+    if start != n_rows:
+        raise ValueError(f"{path} holds {start} rows, {n_rows} expected")
+    for column, rows in null_rows.items():
+        if rows:  # pandas' integer-with-NaN promotion, as dask applies it
+            out[column] = out[column].astype(np.float64)
+            out[column][np.concatenate(rows)] = np.nan
     return out
 
 
@@ -99,9 +132,9 @@ def load_intensity_image(
         density_file = (
             f"{spoqc_tmp_folder}/metrices/hqtr/transcript_density_output_hqtr.parquet"
         )
-        return read_pixel_column(density_file, "transcript_density", threads).reshape(
-            dim_x, dim_y
-        )
+        return read_pixel_columns(density_file, ["transcript_density"], dim_x * dim_y)[
+            "transcript_density"
+        ].reshape(dim_x, dim_y)
     channel = int(staining) if staining else 0
     with dask.config.set(scheduler="threads", num_workers=threads):
         image = sdata[image_type][resolution].image[channel].values

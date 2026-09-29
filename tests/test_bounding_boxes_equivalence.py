@@ -121,7 +121,7 @@ def test_component_boxes_is_regionprops_bbox_in_label_order(name, threads):
 
 
 @pytest.mark.parametrize("dtype", [np.int8, np.int64, np.float32])
-def test_read_pixel_column_matches_dask_on_a_many_part_directory(tmp_path, dtype):
+def test_read_pixel_columns_matches_dask_on_a_many_part_directory(tmp_path, dtype):
     values = np.random.default_rng(3).integers(0, 100, 5003).astype(dtype)
     frame = pd.DataFrame({"other": np.arange(len(values)), "v": values})
     ddf = dd.from_pandas(
@@ -133,12 +133,11 @@ def test_read_pixel_column_matches_dask_on_a_many_part_directory(tmp_path, dtype
     expected = (
         dd.read_parquet(path, columns=["v"], engine="pyarrow")["v"].compute().to_numpy()
     )
-    for threads in (1, 4):
-        actual = raster.read_pixel_column(path, "v", threads)
-        assert actual.dtype == expected.dtype and actual.tobytes() == expected.tobytes()
+    actual = raster.read_pixel_columns(path, ["v"], len(values))["v"]
+    assert actual.dtype == expected.dtype and actual.tobytes() == expected.tobytes()
 
 
-def test_read_pixel_column_reads_every_row_group_of_a_file(tmp_path):
+def test_read_pixel_columns_reads_every_row_group_of_a_file(tmp_path):
     values = np.arange(10_007, dtype=np.int64) * 3
     pq.write_table(
         pa.Table.from_arrays([pa.array(values)], names=["d"]),
@@ -147,7 +146,7 @@ def test_read_pixel_column_reads_every_row_group_of_a_file(tmp_path):
     )
     assert pq.ParquetFile(f"{tmp_path}/f.parquet").metadata.num_row_groups == 11
     assert (
-        raster.read_pixel_column(f"{tmp_path}/f.parquet", "d", 3).tobytes()
+        raster.read_pixel_columns(f"{tmp_path}/f.parquet", ["d"], len(values))["d"].tobytes()
         == values.tobytes()
     )
 
@@ -539,14 +538,14 @@ def test_bounding_box_mutant_is_caught(tmp_path, name):
     assert mutant_differs(tmp_path, broken, "hqpr", kwargs), f"mutant {name!r} survived"
 
 
-def test_read_pixel_column_raises_on_an_empty_directory(tmp_path):
+def test_read_pixel_columns_raises_on_an_empty_directory(tmp_path):
     with pytest.raises(FileNotFoundError, match="no .parquet part files"):
-        raster.read_pixel_column(str(tmp_path), "v", 2)
+        raster.read_pixel_columns(str(tmp_path), ["v"], 2)
 
 
 @pytest.mark.parametrize("type_", [pa.int8(), pa.uint8(), pa.int32(), pa.int64(), pa.float32(), pa.float64()])
 @pytest.mark.parametrize("null_part", [0, 1])
-def test_read_pixel_column_matches_dask_on_nulls(tmp_path, type_, null_part):
+def test_read_pixel_columns_matches_dask_on_nulls(tmp_path, type_, null_part):
     """Nulls in one part only: NaN for floats; integers become float64 everywhere, as dask returns them."""
     parts = [[1, 0, 1, 1], [0, 1, 1]]
     parts[null_part][1] = None
@@ -556,23 +555,22 @@ def test_read_pixel_column_matches_dask_on_nulls(tmp_path, type_, null_part):
         )
     expected = dd.read_parquet(str(tmp_path), columns=["v"], engine="pyarrow")["v"].compute().to_numpy()
     assert np.isnan(expected).sum() == 1
-    for threads in (1, 2):
-        actual = raster.read_pixel_column(str(tmp_path), "v", threads)
-        assert actual.dtype == expected.dtype and actual.tobytes() == expected.tobytes()
+    actual = raster.read_pixel_columns(str(tmp_path), ["v"], len(expected))["v"]
+    assert actual.dtype == expected.dtype and actual.tobytes() == expected.tobytes()
 
 
-def test_read_pixel_column_raises_on_nulls_in_a_bool_column(tmp_path):
+def test_read_pixel_columns_raises_on_nulls_in_a_bool_column(tmp_path):
     """dask would return an object array of True/False/None; no pixel column is boolean."""
     pq.write_table(pa.table({"v": pa.array([True, None], type=pa.bool_())}), f"{tmp_path}/part.0.parquet")
     with pytest.raises(ValueError, match="1 nulls in the bool column"):
-        raster.read_pixel_column(str(tmp_path), "v", 2)
+        raster.read_pixel_columns(str(tmp_path), ["v"], 2)
 
 
-def test_read_pixel_column_raises_on_parts_with_different_types(tmp_path):
+def test_read_pixel_columns_raises_on_parts_with_different_types(tmp_path):
     pq.write_table(pa.table({"v": pa.array([1, 2], type=pa.int8())}), f"{tmp_path}/part.0.parquet")
     pq.write_table(pa.table({"v": pa.array([3, 4], type=pa.int64())}), f"{tmp_path}/part.1.parquet")
     with pytest.raises(ValueError, match="disagree"):
-        raster.read_pixel_column(str(tmp_path), "v", 2)
+        raster.read_pixel_columns(str(tmp_path), ["v"], 4)
 
 
 def test_hqtr_bounding_boxes_no_longer_write_the_duplicate_density_figure(tmp_path):
