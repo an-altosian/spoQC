@@ -115,7 +115,7 @@ def define_bounding_boxes(
     )
 
     binary_image = raster.read_pixel_columns(
-        f'{spoqc_tmp_folder}/{prefix}_output_mask_smoothed_{suffix}', [f"{prefix}_mask_smoothed"], dim_x * dim_y
+        f'{spoqc_tmp_folder}/{prefix}_output_mask_smoothed_{suffix}', [f"{prefix}_mask_smoothed"], dim_x * dim_y, threads
     )[f"{prefix}_mask_smoothed"].reshape(dim_x, dim_y)
 
     # Apply dilation to merge nearby regions

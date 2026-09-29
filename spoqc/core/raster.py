@@ -3,7 +3,7 @@ dilate a binary mask with a disk, and box its 8-connected components.
 
 Every function is exact (bit-identical to the skimage/dask code it replaces; for dilate_disk while
 the disk radius is below about the image size, see there) and splits its work
-over `threads` (row blocks or dask chunks; parquet reads use the pyarrow pool); the numba kernels use the numba
+over `threads` (row blocks, parquet row groups or dask chunks); the numba kernels use the numba
 pool, which spoqc.core.threads.configure sizes (NUMBA_NUM_THREADS) to the run's thread budget.
 """
 
@@ -12,7 +12,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 import dask
 import numpy as np
-import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 from dask.utils import natural_sort_key
 from numba import njit, prange
@@ -21,40 +20,33 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from skimage.morphology import disk
 
+from .threads import map_slices
+
 _EIGHT_CONNECTED = np.ones((3, 3), dtype=bool)
-# read_pixel_columns scans at most this many files per Arrow dataset. A dataset keeps ~24 KB per
-# fragment it has scanned until it is dropped: one dataset over hqtr's 91,296 parts peaked 2.13 GB
-# above its output, datasets of 2,048 parts 0.07 GB (and 13.2 s -> 12.7 s).
-_SCAN_FILES_PER_DATASET = 2048
-_SCAN_BATCH_ROWS = 131_072  # Arrow's default batch size, named so tests can shrink it
-# pre_buffer (Arrow's default) caches whole column chunks ahead of decoding: on hqcr's single
-# 913M-row file it peaked 1.57 GB above the output; without it, 0.0 GB and 2.66 s -> 2.01 s.
-_SCAN_FORMAT = ds.ParquetFileFormat(
-    default_fragment_scan_options=ds.ParquetFragmentScanOptions(pre_buffer=False)
-)
 
 
-def _scan_batches(files, columns):
-    """The files' batches in order, _SCAN_FILES_PER_DATASET files per Arrow dataset."""
-    for first in range(0, len(files), _SCAN_FILES_PER_DATASET):
-        dataset = ds.dataset(files[first : first + _SCAN_FILES_PER_DATASET], format=_SCAN_FORMAT)
-        yield from dataset.scanner(
-            columns=columns, use_threads=True, batch_size=_SCAN_BATCH_ROWS
-        ).scan_batches()
+def _part_files(path):
+    """The parquet files of a per-pixel parquet (a single file, or a directory of part.N.parquet)
+    in the order dask.dataframe.read_parquet reads them."""
+    if not os.path.isdir(path):
+        return [path]
+    # dask orders its part files naturally (part.2 before part.10), not lexicographically.
+    names = sorted((n for n in os.listdir(path) if n.endswith(".parquet")), key=natural_sort_key)
+    if not names:
+        raise FileNotFoundError(f"no .parquet part files in {path}")
+    return [os.path.join(path, n) for n in names]
 
 
-def read_pixel_columns(path, columns, n_rows):
+def read_pixel_columns(path, columns, n_rows, threads):
     """Read columns of a per-pixel parquet (a single file, or a dask directory of part.N.parquet)
     into 1-D numpy arrays of n_rows values each, in the row order dask.dataframe.read_parquet
     returns, as {column: array}.
 
-    Every file is opened and decoded once for all `columns`, by Arrow's C++ dataset scanner on the
-    pyarrow CPU pool (sized by spoqc.core.threads.configure). spoQC's hqtr masks are 91,296
-    ten-thousand-row parts per directory, and at that size the cost is per file, not per byte:
-    opening each file from Python (a serial metadata pass, then again per column in a thread
-    pool) held the GIL for most of it and kept the pool near 1.9 of 4 cores. ScanBatches yields
-    batches in dataset (file list) order and row order within each file (arrow/dataset/scanner.h);
-    the files are scanned in consecutive groups so the per-fragment state Arrow keeps is released.
+    The footers are read on `threads` threads, then every row group is decoded once for all
+    `columns` (pyarrow releases the GIL while decoding) and copied into the preallocated arrays,
+    one row group per task on `threads` threads. spoQC writes its pixel directories in parts of
+    core.parquet.PART_ROWS rows, 1,048,576-row row groups each; with those, the per-file Python
+    overhead is negligible and the decode keeps the threads busy.
 
     Nulls come out as dask 2026.1 returns them: NaN in a float column, and a null anywhere in an
     integer column promotes the whole column to float64 with NaN. Raises when there are no part
@@ -62,40 +54,38 @@ def read_pixel_columns(path, columns, n_rows):
     column holds nulls (dask would return an object array), or when the files do not hold
     exactly n_rows rows.
     """
-    if os.path.isdir(path):
-        # dask orders its part files naturally (part.2 before part.10), not lexicographically.
-        names = sorted(
-            (n for n in os.listdir(path) if n.endswith(".parquet")),
-            key=natural_sort_key,
-        )
-        files = [os.path.join(path, n) for n in names]
-        if not files:
-            raise FileNotFoundError(f"no .parquet part files in {path}")
-    else:
-        files = [path]
-    types = {column: pq.read_schema(files[0]).field(column).type for column in columns}
+    files = _part_files(path)
+    metas = map_slices(lambda i: pq.read_metadata(files[i.start]), len(files), 1, threads)
+    types = {column: metas[0].schema.to_arrow_schema().field(column).type for column in columns}
+    pieces = []  # (file index, row group)
+    for i, meta in enumerate(metas):
+        schema = meta.schema.to_arrow_schema()
+        for column, type_ in types.items():
+            if schema.field(column).type != type_:
+                raise ValueError(
+                    f"parts of {path} disagree on the type of {column}: "
+                    f"{type_} in {files[0]}, {schema.field(column).type} in {files[i]}"
+                )
+        pieces += [(i, group) for group in range(meta.num_row_groups)]
+    sizes = [metas[i].row_group(group).num_rows for i, group in pieces]
+    starts = np.concatenate([[0], np.cumsum(sizes, dtype=np.int64)])
+    if starts[-1] != n_rows:
+        raise ValueError(f"{path} holds {starts[-1]} rows, {n_rows} expected")
     out = {
         column: np.empty(n_rows, dtype=np.dtype(type_.to_pandas_dtype()))
         for column, type_ in types.items()
     }
     null_rows = {column: [] for column in columns}  # integer columns: rows to set NaN at the end
-    start, checked = 0, None
-    for tagged in _scan_batches(files, columns):
-        if tagged.fragment.path != checked:  # the first batch of each file
-            checked = tagged.fragment.path
-            schema = tagged.fragment.physical_schema
-            for column, type_ in types.items():
-                if schema.field(column).type != type_:
-                    raise ValueError(
-                        f"parts of {path} disagree on the type of {column}: "
-                        f"{type_} in {files[0]}, {schema.field(column).type} in {checked}"
-                    )
-        batch = tagged.record_batch
-        stop = start + batch.num_rows
-        if stop > n_rows:
-            raise ValueError(f"{path} holds more than the {n_rows} rows expected")
+
+    def read(piece):
+        k = piece.start
+        i, group = pieces[k]
+        table = pq.ParquetFile(files[i], metadata=metas[i], pre_buffer=False).read_row_group(
+            group, columns=columns, use_threads=False
+        )
+        start, stop = starts[k], starts[k + 1]
         for column in columns:
-            values = batch.column(column)
+            values = table.column(column)
             if values.null_count:
                 kind = out[column].dtype.kind
                 if kind in "iu":
@@ -107,10 +97,9 @@ def read_pixel_columns(path, columns, n_rows):
                     raise ValueError(
                         f"{values.null_count} nulls in the {out[column].dtype} column {column} of {path}"
                     )
-            out[column][start:stop] = values.to_numpy(zero_copy_only=False)  # float nulls: NaN
-        start = stop
-    if start != n_rows:
-        raise ValueError(f"{path} holds {start} rows, {n_rows} expected")
+            out[column][start:stop] = values.to_numpy()  # float nulls: NaN
+
+    map_slices(read, len(pieces), 1, threads)
     for column, rows in null_rows.items():
         if rows:  # pandas' integer-with-NaN promotion, as dask applies it
             out[column] = out[column].astype(np.float64)
@@ -140,7 +129,7 @@ def load_intensity_image(
         density_file = (
             f"{spoqc_tmp_folder}/metrices/hqtr/transcript_density_output_hqtr.parquet"
         )
-        return read_pixel_columns(density_file, ["transcript_density"], dim_x * dim_y)[
+        return read_pixel_columns(density_file, ["transcript_density"], dim_x * dim_y, threads)[
             "transcript_density"
         ].reshape(dim_x, dim_y)
     channel = int(staining) if staining else 0

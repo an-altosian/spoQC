@@ -94,9 +94,9 @@ def start_combining_masks(
 
         # Each file is read once for both of its columns, straight into numpy (origin/dev
         # computed each dask column separately and copied every column into two DataFrames).
-        hqcr = raster.read_pixel_columns(file_hqcr, [hqcr_mask_name, hqcr_belief_name], dim_x * dim_y)
-        hqpr = raster.read_pixel_columns(file_hqpr, [hqpr_mask_name, hqpr_belief_name], dim_x * dim_y)
-        hqtr = raster.read_pixel_columns(file_hqtr, [hqtr_mask_name, hqtr_belief_name], dim_x * dim_y)
+        hqcr = raster.read_pixel_columns(file_hqcr, [hqcr_mask_name, hqcr_belief_name], dim_x * dim_y, threads)
+        hqpr = raster.read_pixel_columns(file_hqpr, [hqpr_mask_name, hqpr_belief_name], dim_x * dim_y, threads)
+        hqtr = raster.read_pixel_columns(file_hqtr, [hqtr_mask_name, hqtr_belief_name], dim_x * dim_y, threads)
         mask_df = {
             'hqcr_mask': hqcr[hqcr_mask_name],
             f'hqpr_{staining}_mask': hqpr[hqpr_mask_name],

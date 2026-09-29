@@ -133,7 +133,7 @@ def test_read_pixel_columns_matches_dask_on_a_many_part_directory(tmp_path, dtyp
     expected = (
         dd.read_parquet(path, columns=["v"], engine="pyarrow")["v"].compute().to_numpy()
     )
-    actual = raster.read_pixel_columns(path, ["v"], len(values))["v"]
+    actual = raster.read_pixel_columns(path, ["v"], len(values), 3)["v"]
     assert actual.dtype == expected.dtype and actual.tobytes() == expected.tobytes()
 
 
@@ -146,7 +146,7 @@ def test_read_pixel_columns_reads_every_row_group_of_a_file(tmp_path):
     )
     assert pq.ParquetFile(f"{tmp_path}/f.parquet").metadata.num_row_groups == 11
     assert (
-        raster.read_pixel_columns(f"{tmp_path}/f.parquet", ["d"], len(values))["d"].tobytes()
+        raster.read_pixel_columns(f"{tmp_path}/f.parquet", ["d"], len(values), 3)["d"].tobytes()
         == values.tobytes()
     )
 
@@ -457,7 +457,7 @@ RASTER_MUTANTS = {
         "hit[x] |= gaps[source, x] <= width",
         "hit[x] |= gaps[source, x] < width",
     ),
-    "lexicographic parts": ("key=natural_sort_key,", "key=None,"),
+    "lexicographic parts": ("key=natural_sort_key)", "key=None)"),
     "image not flipped": ("    return np.flipud(image)", "    return image"),
     "wrong channel": ("channel = int(staining) if staining else 0", "channel = 0"),
 }
@@ -540,7 +540,7 @@ def test_bounding_box_mutant_is_caught(tmp_path, name):
 
 def test_read_pixel_columns_raises_on_an_empty_directory(tmp_path):
     with pytest.raises(FileNotFoundError, match="no .parquet part files"):
-        raster.read_pixel_columns(str(tmp_path), ["v"], 2)
+        raster.read_pixel_columns(str(tmp_path), ["v"], 2, 3)
 
 
 @pytest.mark.parametrize("type_", [pa.int8(), pa.uint8(), pa.int32(), pa.int64(), pa.float32(), pa.float64()])
@@ -555,7 +555,7 @@ def test_read_pixel_columns_matches_dask_on_nulls(tmp_path, type_, null_part):
         )
     expected = dd.read_parquet(str(tmp_path), columns=["v"], engine="pyarrow")["v"].compute().to_numpy()
     assert np.isnan(expected).sum() == 1
-    actual = raster.read_pixel_columns(str(tmp_path), ["v"], len(expected))["v"]
+    actual = raster.read_pixel_columns(str(tmp_path), ["v"], len(expected), 3)["v"]
     assert actual.dtype == expected.dtype and actual.tobytes() == expected.tobytes()
 
 
@@ -563,14 +563,14 @@ def test_read_pixel_columns_raises_on_nulls_in_a_bool_column(tmp_path):
     """dask would return an object array of True/False/None; no pixel column is boolean."""
     pq.write_table(pa.table({"v": pa.array([True, None], type=pa.bool_())}), f"{tmp_path}/part.0.parquet")
     with pytest.raises(ValueError, match="1 nulls in the bool column"):
-        raster.read_pixel_columns(str(tmp_path), ["v"], 2)
+        raster.read_pixel_columns(str(tmp_path), ["v"], 2, 3)
 
 
 def test_read_pixel_columns_raises_on_parts_with_different_types(tmp_path):
     pq.write_table(pa.table({"v": pa.array([1, 2], type=pa.int8())}), f"{tmp_path}/part.0.parquet")
     pq.write_table(pa.table({"v": pa.array([3, 4], type=pa.int64())}), f"{tmp_path}/part.1.parquet")
     with pytest.raises(ValueError, match="disagree"):
-        raster.read_pixel_columns(str(tmp_path), ["v"], 4)
+        raster.read_pixel_columns(str(tmp_path), ["v"], 4, 3)
 
 
 def test_hqtr_bounding_boxes_no_longer_write_the_duplicate_density_figure(tmp_path):
