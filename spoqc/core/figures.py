@@ -18,6 +18,7 @@ figures too, so the figure pools use every core of the budget.
 """
 
 import collections
+import gc
 import io
 import logging
 import multiprocessing
@@ -28,6 +29,7 @@ import warnings
 from concurrent.futures import ProcessPoolExecutor
 
 import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import Collection, QuadMesh
 from matplotlib.colors import Normalize
@@ -43,13 +45,15 @@ THREADS_PER_FIGURE_WORKER = 4
 # ~0.1 ms per marker (44 s and 92 MB for the 410k-point doublet 3D scatter); rasterised it is
 # 5 s and 0.3 MB, drawn at the savefig dpi like the PNG. Axes and text stay vector.
 RASTERIZE_MIN_ELEMENTS = 10_000
-# Float images with more samples than output pixels are reduced to this many samples per output
-# pixel (per axis) in the pickled copy; the renderer antialiases the rest down to output pixels.
+# Images with more samples than output pixels are reduced to this many samples per output pixel
+# (per axis) in the pickled copy; the renderer antialiases the rest down to output pixels.
 # Scalar images are coloured first and the colours averaged (premultiplied by alpha), which is
 # what matplotlib's own antialiasing of a downsampled image does. Measured on the hqtr metric set
 # at full-scale density (18 samples/px) against matplotlib's full-resolution render: 1.1-3.3/255
 # mean at 2 samples/px, where averaging the values instead was up to 11/255 (LBP) even at 4.
-# Integer, bool and label images, 'nearest'/'none' interpolation and norms other than a plain
+# Integer and bool images are coloured the same way, so a label image blends its labels' colours
+# (what matplotlib's 'rgba' interpolation stage shows), never the colour of a mean label.
+# 'nearest'/'none' interpolation, the 'data' interpolation stage and norms other than a plain
 # linear Normalize are never reduced.
 IMAGE_SAMPLES_PER_PIXEL = 2
 # Pickled figure bytes submitted but not yet written before save_figure blocks. Each blob is held
@@ -98,11 +102,16 @@ def _block_mean(a, k):
         count = np.multiply.outer(*sizes).reshape(
             len(sizes[0]), len(sizes[1]), *([1] * (a.ndim - 2))
         )
-        return (block_sum(data) / count).astype(a.dtype)
+        return _as_dtype(block_sum(data) / count, a.dtype)
     valid = ~np.ma.getmaskarray(a)
     count = block_sum(valid)
     mean = block_sum(np.where(valid, data, 0)) / np.maximum(count, 1)
-    return np.ma.masked_array(mean.astype(a.dtype), mask=count == 0)
+    return np.ma.masked_array(_as_dtype(mean, a.dtype), mask=count == 0)
+
+
+def _as_dtype(mean, dtype):
+    """Block means in the image's dtype; integer (e.g. uint8 RGB) means are rounded, not truncated."""
+    return (mean if np.issubdtype(dtype, np.floating) else np.rint(mean)).astype(dtype)
 
 
 @njit(parallel=True)
@@ -156,32 +165,25 @@ def _colour_average(image, k):
     has_mask = np.ma.getmask(a) is not np.ma.nomask
     mask = np.ma.getmaskarray(a) if has_mask else np.zeros((1, 1), bool)
     data = np.ma.getdata(a)
-    if data.dtype not in (np.float32, np.float64):  # numba has no float16 / longdouble
+    # numba takes integer and bool data as it is (a 913 Mpx int8 mask is 7.3 GB as float64), but
+    # has no float16 / longdouble
+    if data.dtype in (np.float16, np.longdouble):
         data = data.astype(np.float64)
     return _colour_blocks(data, mask, has_mask, float(norm.vmin), float(norm.vmax),
                           bool(norm.clip), lut, cmap.N, k)
 
 
-def _reduced_images(fig, dpi):
-    """{id(per-pixel array): reduced copy} for float images far denser than the output.
+def _output_dpi(fig, kwargs):
+    dpi = kwargs.get("dpi", matplotlib.rcParams["savefig.dpi"])
+    return fig.dpi if dpi == "figure" else dpi
 
-    Every per-pixel array of an image is reduced with the same blocks: the data (scalar data is
-    coloured and colour-averaged, RGB(A) data is averaged; masked samples count as the bad
-    colour or are excluded) and an array alpha. Extent (fixed by imshow), norm and clim are not
-    per-pixel; the colorbar keeps using the image's norm and colormap. Only plain AxesImage:
-    NonUniformImage/PcolorImage carry per-pixel coordinate arrays and are left alone.
-    """
-    reduced = {}
+
+def _dense_images(fig, dpi):
+    """[(image, k)] for the plain AxesImages of `fig` that k x k blocks (k > 1) would bring down
+    to IMAGE_SAMPLES_PER_PIXEL samples per output pixel at `dpi`."""
+    dense = []
     for image in fig.findobj(lambda artist: type(artist) is AxesImage):
         a = image.get_array()
-        if (
-            not np.issubdtype(a.dtype, np.floating)
-            or image.get_interpolation() in ("nearest", "none")
-            or image.get_interpolation_stage() == "data"  # colours of resampled values, not averages
-        ):
-            continue
-        if a.ndim == 2 and type(image.norm) is not Normalize:
-            continue
         # Display extent of the whole image through its own transform (world or pixel units,
         # zoomed or translated alike), at the figure dpi; the output is at `dpi`.
         box = image.get_window_extent()
@@ -191,11 +193,36 @@ def _reduced_images(fig, dpi):
             a.shape[0] / (abs(box.height) * scale),
         )
         k = int(round(samples_per_pixel / IMAGE_SAMPLES_PER_PIXEL, 6))  # display extents carry float noise
-        if k > 1:  # the norm keeps the vmin/vmax imshow took from the full array
-            reduced[id(a)] = _colour_average(image, k) if a.ndim == 2 else _block_mean(a, k)
-            alpha = image.get_alpha()
-            if np.ndim(alpha) > 0:  # e.g. ovrlpy's signal-faded integrity map
-                reduced[id(alpha)] = _block_mean(np.asarray(alpha, dtype=np.float64), k)
+        if k > 1:
+            dense.append((image, k))
+    return dense
+
+
+def _reduced_images(fig, dpi):
+    """{id(per-pixel array): reduced copy} for images far denser than the output.
+
+    Every per-pixel array of an image is reduced with the same blocks: the data (scalar data is
+    coloured and colour-averaged, RGB(A) data is averaged; masked samples count as the bad
+    colour or are excluded; integer and bool data are coloured like floats) and an array alpha.
+    Extent (fixed by imshow), norm and clim are not
+    per-pixel; the colorbar keeps using the image's norm and colormap. Only plain AxesImage:
+    NonUniformImage/PcolorImage carry per-pixel coordinate arrays and are left alone.
+    """
+    reduced = {}
+    for image, k in _dense_images(fig, dpi):
+        a = image.get_array()
+        if (
+            image.get_interpolation() in ("nearest", "none")
+            or image.get_interpolation_stage() == "data"  # colours of resampled values, not averages
+        ):
+            continue
+        if a.ndim == 2 and type(image.norm) is not Normalize:
+            continue
+        # the norm keeps the vmin/vmax imshow took from the full array
+        reduced[id(a)] = _colour_average(image, k) if a.ndim == 2 else _block_mean(a, k)
+        alpha = image.get_alpha()
+        if np.ndim(alpha) > 0:  # e.g. ovrlpy's signal-faded integrity map
+            reduced[id(alpha)] = _block_mean(np.asarray(alpha, dtype=np.float64), k)
     return reduced
 
 
@@ -219,8 +246,7 @@ class _SubstitutingPickler(pickle.Pickler):
 def _pickle(fig, exact, kwargs):
     if exact or not isinstance(fig, Figure):
         return pickle.dumps(fig, protocol=pickle.HIGHEST_PROTOCOL)
-    dpi = kwargs.get("dpi", matplotlib.rcParams["savefig.dpi"])
-    replacements = _reduced_images(fig, fig.dpi if dpi == "figure" else dpi)
+    replacements = _reduced_images(fig, _output_dpi(fig, kwargs))
     if not replacements:
         return pickle.dumps(fig, protocol=pickle.HIGHEST_PROTOCOL)
     buffer = io.BytesIO()
@@ -234,13 +260,19 @@ def _write(blob, rc, paths, exact, kwargs):
         for path in paths:
             fig.write_image(path, **kwargs)
         return
-    with matplotlib.rc_context(rc):
-        for path in paths:
-            if not exact and os.fspath(path).lower().endswith(".pdf"):
-                for collection in fig.findobj(Collection):
-                    if _element_count(collection) >= RASTERIZE_MIN_ELEMENTS:
-                        collection.set_rasterized(True)  # no effect on the Agg PNG
-            fig.savefig(path, **kwargs)
+    # Unpickling a pyplot figure registers it with pyplot as the current figure: close it, or a
+    # worker keeps every figure it renders, and without a pool the caller's plt.close() would
+    # close this copy instead of its own figure.
+    try:
+        with matplotlib.rc_context(rc):
+            for path in paths:
+                if not exact and os.fspath(path).lower().endswith(".pdf"):
+                    for collection in fig.findobj(Collection):
+                        if _element_count(collection) >= RASTERIZE_MIN_ELEMENTS:
+                            collection.set_rasterized(True)  # no effect on the Agg PNG
+                fig.savefig(path, **kwargs)
+    finally:
+        plt.close(fig)
 
 
 def save_figure(fig, *paths, exact=False, **kwargs):
@@ -252,6 +284,11 @@ def save_figure(fig, *paths, exact=False, **kwargs):
     rasterising: use it for files that are read back as data.
     """
     rc = dict(matplotlib.rcParams) if isinstance(fig, Figure) else None
+    if rc is not None and _dense_images(fig, _output_dpi(fig, kwargs)):
+        # A closed figure is a reference cycle holding its image arrays (8 B/px for float64) until
+        # a full collection, which CPython rarely runs: on a 913 Mpx slide hqtr's closed figures
+        # held ~58 GB. Free them before this dense figure is pickled.
+        gc.collect()
     blob = _pickle(fig, exact, kwargs)
     if _executor is None:
         _write(blob, rc, paths, exact, kwargs)

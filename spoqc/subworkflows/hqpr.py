@@ -67,7 +67,7 @@ def get_hqpr(
             background_intensity=background_intensity,
         )
 
-        print('[finish]')   
+        print('[finish]')
 
     if ( CONST.STEP in ['all', 'unittest', 'hqpr', 'hqpr_refinement'] ):
 

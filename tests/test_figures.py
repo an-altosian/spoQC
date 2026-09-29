@@ -1,3 +1,5 @@
+import gc
+import io
 import os
 import pickle
 import subprocess
@@ -5,6 +7,7 @@ import sys
 import threading
 import time
 import types
+import weakref
 from concurrent.futures import Future
 from concurrent.futures.process import BrokenProcessPool
 
@@ -164,6 +167,25 @@ class TestWorkers:
         assert background + figures._workers[figures._drain] == WORKERS
 
 
+class TestPyplotState:
+    def test_worker_closes_every_figure_it_renders(self, pool, tmp_path):
+        for i in range(5):
+            fig = _scatter(seed=i)
+            save_figure(fig, tmp_path / f"{i}.png", dpi=20)
+            plt.close(fig)
+        _until(lambda: not figures._held and not figures._in_flight)  # all on the background worker
+        assert figures._workers[figures._executor] == 1
+        assert figures._executor.submit(plt.get_fignums).result() == []
+
+    def test_without_a_pool_plt_close_closes_the_callers_figure(self, tmp_path):
+        plt.close("all")
+        fig = _scatter()
+        save_figure(fig, tmp_path / "a.png", dpi=20)
+        assert plt.gcf() is fig  # the written copy is closed and fig is current again
+        plt.close()
+        assert plt.get_fignums() == []
+
+
 class TestImageReduction:
     """Output: 2 in x 2 in figure at 50 dpi, axes filling it, so the image covers 100 x 100 px."""
 
@@ -197,12 +219,77 @@ class TestImageReduction:
         rows_with_line = (np.abs(reduced - background).sum(axis=-1) > 0).any(axis=1)
         assert rows_with_line.sum() == len(range(0, 4000, 97))
 
-    @pytest.mark.parametrize("dtype", [np.uint8, np.int32, bool])
-    def test_integer_bool_and_label_images_are_never_reduced(self, dtype):
+    def _png(self, fig, exact):
+        buffer = io.BytesIO()
+        pickle.loads(figures._pickle(fig, exact, {"dpi": 50})).savefig(buffer, format="png", dpi=50)
+        buffer.seek(0)
+        return plt.imread(buffer)
+
+    @pytest.mark.parametrize("dtype", [np.uint8, np.int8, np.int32, bool])
+    def test_integer_and_bool_images_are_reduced_to_rgba(self, dtype):
         data = np.zeros((4000, 4000), dtype=dtype)
         data[::97, :] = 1
-        fig, _ = self._imshow(data)
+        fig, _ = self._imshow(data, cmap="gray")
+        reduced = next(iter(figures._reduced_images(fig, 50).values()))
+        assert reduced.dtype == np.uint8 and reduced.shape == (self._side(40), self._side(40), 4)
+
+    def test_integer_image_reduction_blends_label_colours_not_labels(self):
+        # labels 0 and 2 side by side in every block: tab10's colours 0 and 2 averaged, not colour 1
+        data = np.zeros((4000, 4000), dtype=np.int32)
+        data[:, 1::2] = 2
+        fig, ax = self._imshow(data, cmap="tab10")
+        reduced = next(iter(figures._reduced_images(fig, 50).values()))
+        colours = ax.images[0].to_rgba(np.array([[0, 2]]))[0]
+        np.testing.assert_allclose(reduced[5, 5] / 255, colours.mean(axis=0), atol=1 / 255)
+
+    @pytest.mark.parametrize("cmap", ["gray", "tab10"])
+    def test_reduced_integer_image_renders_as_the_full_image_up_to_resampling(self, cmap):
+        # Exactly the resampling difference the float reduction has. Random 10-px labels are the
+        # worst case for it: at 2 samples/px measured 10.6/255 mean (gray) and 8.5/255 (tab10).
+        rng = np.random.default_rng(0)
+        labels = np.repeat(np.repeat(rng.integers(0, 10, (400, 400)), 10, 0), 10, 1)
+        errors = []
+        for data in (labels, labels.astype(np.float32)):
+            fig, _ = self._imshow(data, cmap=cmap)
+            errors.append(np.abs(self._png(fig, exact=False) - self._png(fig, exact=True)).mean())
+            plt.close(fig)
+        assert errors[0] == pytest.approx(errors[1], abs=1e-6) and errors[0] < 12 / 255, np.array(errors) * 255
+
+    def test_integer_image_with_array_alpha_is_reduced_with_its_alpha_like_a_float_image(self):
+        data = np.zeros((4000, 4000), dtype=np.uint8)
+        alpha = np.ones((4000, 4000))
+        fig, _ = self._imshow(data, alpha=alpha)
+        reduced = figures._reduced_images(fig, 50)
+        assert {k: v.shape[:2] for k, v in reduced.items()} == {
+            id(fig.axes[0].images[0].get_array()): (self._side(40),) * 2,
+            id(alpha): (self._side(40),) * 2,
+        }
+
+    def test_integer_image_at_the_data_interpolation_stage_is_not_reduced(self):
+        fig, _ = self._imshow(np.zeros((4000, 4000), dtype=np.uint8), interpolation_stage="data")
         assert self._reduced_shape(fig) is None
+
+    def test_integer_rgb_block_means_are_rounded(self):
+        rgb = np.array([[0, 1], [1, 1]], dtype=np.uint8)[..., None].repeat(3, axis=2)
+        assert figures._block_mean(rgb, 2).tolist() == [[[1, 1, 1]]]  # 0.75, not truncated to 0
+
+    @pytest.mark.parametrize("exact", [False, True])
+    def test_dead_dense_figures_do_not_accumulate_across_saves(self, tmp_path, exact):
+        # exact figures count too: qc_wsi's exact figure is dense
+        plt.close("all")
+        images = []
+        gc.disable()  # only save_figure may collect
+        try:
+            for i in range(4):
+                fig, ax = self._imshow(np.zeros((4000, 4000), dtype=np.float32))
+                images.append(weakref.ref(ax.images[0]))
+                save_figure(fig, tmp_path / f"{i}.png", dpi=50, exact=exact)
+                plt.close(fig)
+                del fig, ax
+            alive = [i for i, image in enumerate(images) if image() is not None]
+        finally:
+            gc.enable()
+        assert alive == [3]  # a closed figure is a reference cycle until the next dense save
 
     @pytest.mark.parametrize("interpolation", ["nearest", "none"])
     def test_nearest_and_none_interpolation_are_never_reduced(self, interpolation):
