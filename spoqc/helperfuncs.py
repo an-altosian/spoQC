@@ -11,7 +11,6 @@ import dask.dataframe as dd
 import dask.array as da
 import dask
 import time
-import pyarrow as pa
 import pyarrow.parquet as pq
 import shutil
 import scanpy as sc
