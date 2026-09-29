@@ -12,6 +12,7 @@ import types
 from unittest import mock
 
 import anndata as ad
+import numba
 import numpy as np
 import pytest
 import scanpy as sc
@@ -151,14 +152,31 @@ def test_forest_runs_on_the_thread_budget_and_index_is_not_compressed():
     ):
         knn.neighbors(adata, 20, SEED, 5)
     assert calls == [5]
+    assert pynndescent_.make_forest is knn._MAKE_FOREST  # restored after the fit
+
+
+def test_forest_swap_is_undone_when_the_fit_fails():
+    with mock.patch.object(pynndescent_.NNDescent, "__init__", side_effect=RuntimeError("fit failed")):
+        with pytest.raises(RuntimeError, match="fit failed"):
+            knn.neighbors(qc_table(10_000, True), 20, SEED, 2)
+    assert pynndescent_.make_forest is knn._MAKE_FOREST
+
+
+def test_forest_swap_refuses_a_replaced_make_forest():
+    with mock.patch.object(pynndescent_, "make_forest", lambda *a, **k: None):
+        with pytest.raises(RuntimeError, match="replaced by other code"):
+            knn.neighbors(qc_table(10_000, True), 20, SEED, 2)
 
 
 def test_nn_descent_thread_count_would_change_the_graph():
     """Mutation check: the comparison above can see a real difference. Raising scanpy's n_jobs
     (NN-descent threads) is the change the primitive must not make."""
+    nn_threads = min(4, numba.config.NUMBA_NUM_THREADS)  # set_num_threads refuses more
+    if nn_threads < 2:
+        pytest.skip("needs at least 2 numba threads")
     ref, other = qc_table(12_000, True), qc_table(12_000, True)
     knn.neighbors(ref, 20, SEED, 1)
-    with mock.patch.object(sc.settings, "_n_jobs", 4):
+    with mock.patch.object(sc.settings, "_n_jobs", nn_threads):
         knn.neighbors(other, 20, SEED, 1)
     assert not np.array_equal(
         other.obsp["distances"].indices, ref.obsp["distances"].indices

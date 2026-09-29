@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import scipy.sparse as sp
 import plotly.express as px
 import spatialdata as sd
 import scanpy as sc
@@ -472,6 +473,26 @@ def cell_quality_probability_refinement(sdata, imagedim, image_type, resolution,
         df.to_parquet(f"{spoqc_tmp_folder}/traffic_light_output_hqcr.parquet")
 
 
+def qc_values_as_gene_csr(genes, cell_df):
+    """cell_df written into the gene CSR `genes` (cells x len(cell_df.columns)), as the X the
+    clustering has always read: origin/dev set X = cell_df on the view table[:, 0:13], and scipy's
+    CSR assignment zeroes the entries stored there, then stores every non-zero value. So an
+    entry is stored where `genes` stored one or the value is non-zero (NaN included), in row
+    then column order, cast to the gene matrix's dtype."""
+    values = cell_df.to_numpy(dtype=np.float64)  # what anndata made of the DataFrame
+    stored = np.zeros(values.shape, dtype=bool)
+    stored_coo = genes.tocoo()
+    stored[stored_coo.row, stored_coo.col] = True
+    keep = stored | (values != 0)
+    rows, cols = np.nonzero(keep)
+    indptr = np.zeros(values.shape[0] + 1, dtype=genes.indptr.dtype)
+    np.cumsum(keep.sum(axis=1), out=indptr[1:])
+    return sp.csr_matrix(
+        (values[rows, cols].astype(genes.dtype), cols.astype(genes.indices.dtype), indptr),
+        shape=values.shape,
+    )
+
+
 def load_data_for_hqcr(sdata, spoqc_tmp_folder, counts):
     print("[NOTE] Gather cell QC metrices")
     helperfuncs.read_sdata_parquet_tmp_files(sdata, spoqc_tmp_folder, 'hqcr')
@@ -485,11 +506,10 @@ def load_data_for_hqcr(sdata, spoqc_tmp_folder, counts):
 
     # This I have to do to avoid an error because of the number of features I have selected.
     qc_metrices = list(cell_df.columns)
-    # Setting X on a view writes into its parent's X. The view is taken of a copy, so the QC
-    # values do not overwrite the first genes of sdata['table'].X (the normlog layer) for later
-    # steps, while X is still written into the same float32 CSR the clustering has always read.
-    qc_domains_adata = qc_domains_adata[:,0:len(qc_metrices)].copy()[:, :]
-    qc_domains_adata.X = cell_df
+    # A copy, so the QC values no longer overwrite the first genes of sdata['table'].X (the
+    # normlog layer) for later steps, as setting X on the view did.
+    qc_domains_adata = qc_domains_adata[:,0:len(qc_metrices)].copy()
+    qc_domains_adata.X = qc_values_as_gene_csr(qc_domains_adata.X, cell_df)
 
     return qc_domains_adata, cell_df, qc_metrices
 

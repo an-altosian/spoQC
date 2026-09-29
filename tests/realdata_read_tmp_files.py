@@ -57,3 +57,13 @@ for col in geometry:
 helperfuncs.read_sdata_parquet_tmp_files(mandatory, tmp_folder, "hqcr")
 pd.testing.assert_frame_equal(mandatory["table"].obs[full.columns], full)
 print(f"on its own with {geometry} already set: the other columns read, identical to the full read")
+
+# with an annotation file: write_out_anndata('overview') drops nuclei_idxs, then
+# load_cell_metrices reads the tmp files again. Only that column is read back, from cellqc's file.
+dropped = {"table": ad.AnnData(obs=in_memory.drop(columns=["nuclei_idxs"]))}
+original = {"table": ad.AnnData(obs=in_memory.drop(columns=["nuclei_idxs"]))}
+original_read_sdata_parquet_tmp_files(original, tmp_folder, "hqcr")
+assert "nuclei_idxs" not in original["table"].obs  # origin/dev swallowed the overlap
+helperfuncs.read_sdata_parquet_tmp_files(dropped, tmp_folder, "hqcr")
+pd.testing.assert_frame_equal(dropped["table"].obs[in_memory.columns], in_memory)
+print("after write_out_anndata's drop: nuclei_idxs read back (origin/dev: not read), the rest unchanged")

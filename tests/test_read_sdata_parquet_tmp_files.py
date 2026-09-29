@@ -151,3 +151,34 @@ def test_missing_folder_raises(tmp_path):
         helperfuncs.read_sdata_parquet_tmp_files(
             {"table": base_table()}, str(tmp_path / "missing"), "hqcr"
         )
+
+
+def test_column_dropped_after_the_read_is_read_again(tmp_folder):
+    """With an annotation file, write_out_anndata('overview') drops nuclei_idxs from obs and
+    load_cell_metrices reads the tmp files again: only that column is read back (origin/dev
+    swallowed the overlap and read nothing)."""
+    folder, in_memory_obs = tmp_folder
+    in_memory_obs["hqcr_traffic_light"] = "green"
+    sdata = {"table": in_process_table(in_memory_obs.drop(columns=["doublet_distance"]))}
+    helperfuncs.read_sdata_parquet_tmp_files(sdata, str(folder), "hqcr")
+    expected = in_memory_obs.set_axis(in_memory_obs.index.rename(None))
+    pd.testing.assert_frame_equal(sdata["table"].obs[expected.columns], expected)
+
+
+def test_column_in_two_files_raises(tmp_folder):
+    folder, _ = tmp_folder
+    pd.DataFrame({"doublet_distance": np.zeros(N_CELLS)}, index=base_table().obs.index).to_parquet(
+        folder / "extraqc_output_hqcr.parquet"
+    )
+    with pytest.raises(ValueError, match=r"more than one tmp file.*doublet_distance.*extraqc_output_hqcr"):
+        helperfuncs.read_sdata_parquet_tmp_files({"table": base_table()}, str(folder), "hqcr")
+
+
+def test_file_without_pandas_metadata_raises(tmp_folder):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    folder, _ = tmp_folder
+    pq.write_table(pa.table({"x": np.zeros(N_CELLS)}), folder / "plain_output_hqcr.parquet")
+    with pytest.raises(ValueError, match="plain_output_hqcr.parquet has no pandas metadata"):
+        helperfuncs.read_sdata_parquet_tmp_files({"table": base_table()}, str(folder), "hqcr")

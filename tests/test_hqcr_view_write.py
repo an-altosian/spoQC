@@ -66,11 +66,11 @@ def table():
         values[rng.random(N_CELLS) < 0.3] = (
             0.0  # zeros where the gene had a value, and vice versa
         )
-        obs[col] = (
-            values
-            if col not in ("nuceli_count", "wdoublet")
-            else values.astype(np.int64)
-        )
+        if col in ("nuceli_count", "wdoublet"):
+            obs[col] = values.astype(np.int64)
+        else:
+            values[rng.random(N_CELLS) < 0.02] = np.nan  # a NaN is a stored value too
+            obs[col] = values
     adata = ad.AnnData(X=normlog, obs=obs, layers={"raw": counts, "normlog": normlog})
     adata.X = adata.layers["normlog"]  # qc_ambient: the same object
     return {"table": adata}
@@ -93,12 +93,16 @@ def test_clustering_input_is_unchanged(tmp_folder):
     )
     assert new_metrics == old_metrics
     pd.testing.assert_frame_equal(new_df, old_df)
-    assert type(new.X) is type(old.X) and new.shape == old.shape
+    # the original's X is anndata's view class, a csr_matrix subclass
+    assert isinstance(new.X, sp.csr_matrix) and isinstance(old.X, sp.csr_matrix)
+    assert new.shape == old.shape
     for attr in ("data", "indices", "indptr"):
         a, b = getattr(new.X, attr), getattr(old.X, attr)
         assert a.dtype == b.dtype, attr
         np.testing.assert_array_equal(a, b, err_msg=attr)
-    pd.testing.assert_frame_equal(new.obs, old.obs)
+    pd.testing.assert_frame_equal(
+        new.obs, pd.DataFrame(old.obs)
+    )  # old.obs is a DataFrameView
 
 
 def test_table_is_left_untouched(tmp_folder):

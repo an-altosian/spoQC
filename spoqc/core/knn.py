@@ -14,16 +14,27 @@ graph (pynndescent 0.6.0, scanpy 1.12):
    nogil numba functions returned in order, so any n_jobs gives the same trees. Only the
    forest gets more threads: NN-descent still runs on settings.n_jobs threads, because its
    candidate sampling splits its rng stream by thread count (utils.new_build_candidates).
+
+   pynndescent has no way to set the forest's threads apart from NN-descent's: NNDescent takes
+   one n_jobs, passes it to make_forest and to numba.set_num_threads for NN-descent, builds the
+   forest inside __init__ and accepts no prebuilt forest. So for the length of fit(),
+   pynndescent_.make_forest (the module global NNDescent calls) is swapped for a wrapper that
+   only changes n_jobs. Fits are serialised by a lock, and the swap raises if someone else has
+   replaced make_forest. An NNDescent built in another thread during that window gets the same
+   trees (n_jobs does not change them), on forest_threads threads.
 """
 
 from __future__ import annotations
 
-from unittest import mock
+import threading
 
 import numpy as np
 import scanpy as sc
 from pynndescent import PyNNDescentTransformer, pynndescent_
 from pynndescent.rp_trees import make_forest
+
+_MAKE_FOREST = pynndescent_.make_forest  # what NNDescent calls
+_FIT_LOCK = threading.Lock()
 
 # scanpy.neighbors.Neighbors._handle_transformer: for the euclidean metric with knn=True, scanpy
 # uses sklearn brute force below this many cells, and pynndescent from it on
@@ -44,8 +55,14 @@ class _GraphOnlyTransformer(PyNNDescentTransformer):
                 data, n_neighbors, n_trees, leaf_size, rng_state, random_state, self.forest_threads, *args, **kwds
             )
 
-        with mock.patch.object(pynndescent_, "make_forest", forest):
-            self.fit(X, compress_index=False)
+        with _FIT_LOCK:
+            if pynndescent_.make_forest is not _MAKE_FOREST:
+                raise RuntimeError("pynndescent_.make_forest has been replaced by other code")
+            pynndescent_.make_forest = forest
+            try:
+                self.fit(X, compress_index=False)
+            finally:
+                pynndescent_.make_forest = _MAKE_FOREST
         return self.transform(X=None)
 
 
