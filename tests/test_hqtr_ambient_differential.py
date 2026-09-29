@@ -1,5 +1,9 @@
-"""Differential tests: the per-pixel parquet writer (core.parquet.write_parts) vs origin/dev's
-helperfuncs.ddf_to_parquet (tests/legacy/parquet_writer.py), byte for byte.
+"""Differential tests: the per-pixel parquet writer and Moran's I vs the verbatim origin/dev code
+they replace.
+
+- the parquet writer (core.parquet): helperfuncs.ddf_to_parquet, byte for byte;
+- Moran's I: tests/legacy/global_moran_I.py and tests/legacy/local_moran_I.py.
+Every comparison is exact: values, dtype and order.
 """
 
 import os
@@ -9,10 +13,15 @@ import dask.dataframe as dd
 import numpy as np
 import pandas as pd
 import pytest
-from conftest import parquet_rows
+from conftest import assert_same_array, load_legacy, parquet_rows
+from libpysal.weights import KNN
 
 from legacy.parquet_writer import ddf_to_parquet  # origin/dev's writer, the reference for core.parquet
 from spoqc.core import parquet
+from spoqc.metrics.transcript_density import (
+    global_moran_I,
+    local_moran_I,
+)
 
 
 def assert_same_dir(a, b):
@@ -41,6 +50,33 @@ class TestPrior:
             8,
             9,
         )
+
+
+class TestMoransI:
+    def test_global_matches_origin(self):
+        rng = np.random.default_rng(3)
+        X = rng.poisson(1.0, (300, 12)).astype(np.float32)
+        X[:, 4] = 2.0  # zero variance: NaN
+        w = KNN.from_array(rng.uniform(0, 100, (300, 2)), k=6)
+        w.transform = "r"
+        legacy = load_legacy("global_moran_I", "spoqc.metrics.transcript_density")
+        assert_same_array(
+            global_moran_I.moran_I_all_genes(X, w.sparse),
+            legacy.moran_I_all_genes(X, w.sparse),
+            "global",
+        )
+
+    def test_local_matches_origin(self):
+        rng = np.random.default_rng(4)
+        coords = rng.uniform(0, 100, (90, 2))
+        X = rng.poisson(1.0, (90, 12)).astype(np.float32)
+        X[:, 7] = 0.0  # zero variance: -1
+        legacy = load_legacy("local_moran_I", "spoqc.metrics.transcript_density")
+        expected = legacy.moran_I_all_genes(X, KNN.from_array(coords, k=30))
+        got = global_moran_I.moran_I_all_genes(
+            X, local_moran_I.KNNWeights(coords, 30), fill=-1.0, dtype=np.float32
+        )
+        assert_same_array(got, expected, "local")
 
 
 class TestWriteParts:

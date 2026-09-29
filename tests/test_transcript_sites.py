@@ -44,8 +44,17 @@ def test_transcript_quality_density_image(sdata):
     assert_same_array(got, expected, "qv image")
 
 
-def test_local_moran_I_values(sdata):
-    legacy = load_legacy("local_moran_I", DENSITY)
+def _legacy_local_moran_I(monkeypatch):
+    """The origin/dev module, with the helperfuncs.points_within_radius it called (since
+    replaced by core.spatial.neighbour_lists) restored verbatim for it."""
+    from test_core_spatial_neighbours import original_points_within_radius
+
+    monkeypatch.setattr(helperfuncs, "points_within_radius", original_points_within_radius, raising=False)
+    return load_legacy("local_moran_I", DENSITY)
+
+
+def test_local_moran_I_values(sdata, monkeypatch):
+    legacy = _legacy_local_moran_I(monkeypatch)
     expected = legacy.calculate_local_moran_I_values(sdata, 2)
     got = local_moran_I.calculate_local_moran_I_values(sdata, 2)
     assert len(np.unique(expected)) > 10, "degenerate synthetic data"
@@ -72,7 +81,7 @@ def _global_ambient():
 
 def test_transcript_ambient_density_image(sdata, monkeypatch):
     legacy = load_legacy("ac_image", DENSITY)
-    monkeypatch.setattr(legacy, "local_moran_I", load_legacy("local_moran_I", DENSITY))
+    monkeypatch.setattr(legacy, "local_moran_I", _legacy_local_moran_I(monkeypatch))
     expected = legacy.generate_transcript_ambient_density_image(
         sdata, None, 2, IMAGEDIM, _global_ambient(), *IMAGE_ARGS[1:]
     )

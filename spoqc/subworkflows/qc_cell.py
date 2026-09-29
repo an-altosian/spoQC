@@ -10,7 +10,7 @@ def run_qc_cell(sdata, figure_path, CONST, obs_columns):
 
     print("[NOTE] Convexity QC")
     timer.start()
-    metrics.segmentation.convexity.calc_convexity(sdata, figure_path)
+    metrics.segmentation.convexity.calc_convexity(sdata, figure_path, CONST.THREADS)
     timer.stop()
 
     print("[NOTE] Multinuclei QC")
@@ -25,7 +25,7 @@ def run_qc_cell(sdata, figure_path, CONST, obs_columns):
 
     print("[NOTE] Cell island inspection")
     timer.start()
-    metrics.segmentation.island_score.calc_island_score(sdata, figure_path, 15, 10)
+    metrics.segmentation.island_score.calc_island_score(sdata, figure_path, 15, 10, CONST.THREADS)
     timer.stop()
 
     print("[NOTE] Low transcript quality inspection")
