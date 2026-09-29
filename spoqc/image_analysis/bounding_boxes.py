@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 
 from .. import helperfuncs
 from spoqc.core import raster
+from spoqc.core import figures
 from spoqc.core.figures import save_figure
 
 def _overlap(a, b):
@@ -40,15 +41,19 @@ def _boudning_box_plot(bounding_boxes, figure_path, suffix, image, imagedim, fli
     plt.figure(figsize=(12, 6))
 
     if ( flip ):
-        plt.imshow(
+        figures.imshow(
+            plt.gca(),
             np.flipud( np.log10 (image + 1) ),
+            dpi=300,
             cmap='gray',
             extent=[imagedim.bb_xmin, imagedim.bb_xmax, imagedim.bb_ymin, imagedim.bb_ymax],
             aspect='equal'
         )
     else:
-        plt.imshow(
+        figures.imshow(
+            plt.gca(),
             np.log10 (image + 1),
+            dpi=300,
             cmap='gray',
             extent=[imagedim.bb_xmin, imagedim.bb_xmax, imagedim.bb_ymin, imagedim.bb_ymax],
             aspect='equal'
@@ -123,15 +128,19 @@ def define_bounding_boxes(
 
     plt.figure(figsize=(12, 6))
     if ( flip ):
-        plt.imshow(
+        figures.imshow(
+            plt.gca(),
             np.flipud( dilated_image ),
+            dpi=300,
             cmap='gray',
             extent=[imagedim.bb_xmin, imagedim.bb_xmax, imagedim.bb_ymin, imagedim.bb_ymax],
             aspect='equal'
         )
     else:
-        plt.imshow(
+        figures.imshow(
+            plt.gca(),
             dilated_image,
+            dpi=300,
             cmap='gray',
             extent=[imagedim.bb_xmin, imagedim.bb_xmax, imagedim.bb_ymin, imagedim.bb_ymax],
             aspect='equal'

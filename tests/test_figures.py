@@ -921,3 +921,111 @@ class TestLockOrder:
             assert isinstance(_wait_with_timeout(), BrokenProcessPool)
         finally:
             figures.abort()
+
+
+class TestImshow:
+    """figures.imshow: a dense scalar image is coloured and reduced before matplotlib copies it.
+    Output: a 12 x 6 in figure at 50 dpi with a colorbar, as plot_pixels draws (at 300 dpi)."""
+
+    DPI = 50
+
+    @staticmethod
+    def _data(dtype, shape=(1500, 2250), seed=0):
+        rng = np.random.default_rng(seed)
+        yy, xx = np.mgrid[0 : shape[0], 0 : shape[1]]
+        f = np.sin(xx / 60.0) * np.cos(yy / 40.0) * 10 + rng.normal(0, 1, shape)
+        if dtype == "float":
+            f[100:200, 100:900] = np.nan
+            f[700:720, :] = np.inf
+            f[900:910, :] = -np.inf
+            return f
+        return {"uint8": (f > 3).astype(np.uint8), "bool": f > 0, "int64": np.rint(f).astype(np.int64)}[dtype]
+
+    def _figure(self, data, new, **kwargs):
+        plt.figure(figsize=(12, 6))
+        kwargs = {"cmap": "hot", "extent": [0, 90, 0, 60], "aspect": "equal", **kwargs}
+        if new:
+            image = figures.imshow(plt.gca(), data, dpi=self.DPI, **kwargs)
+        else:
+            image = plt.imshow(data, **kwargs)
+        plt.colorbar()
+        return plt.gcf(), image
+
+    def _png(self, fig, tmp_path, name):
+        save_figure(fig, tmp_path / name, bbox_inches="tight", dpi=self.DPI)
+        return _png(tmp_path / name)
+
+    @pytest.mark.parametrize("dtype", ["float", "uint8", "bool", "int64"])
+    def test_renders_as_matplotlib_and_save_figure_render_the_full_array(self, dtype, tmp_path):
+        data = self._data(dtype)
+        expected = self._png(self._figure(data, new=False)[0], tmp_path, "plain.png")
+        actual = self._png(self._figure(data, new=True)[0], tmp_path, "new.png")
+        assert actual.shape == expected.shape
+        assert np.abs(actual - expected).mean() <= 0.5 / 255, np.abs(actual - expected).mean()
+
+    def test_matplotlib_never_masks_the_full_array(self, monkeypatch):
+        sizes = []
+        masked_invalid = matplotlib.cbook.safe_masked_invalid
+
+        def record(x, *args, **kwargs):
+            sizes.append(int(np.prod(np.shape(x)[:2])))  # samples, not channels
+            return masked_invalid(x, *args, **kwargs)
+
+        monkeypatch.setattr(matplotlib.cbook, "safe_masked_invalid", record)
+        data = self._data("float")
+        _, image = self._figure(data, new=True)
+        assert image.get_array().dtype == np.uint8 and image.get_array().ndim == 3
+        assert sizes and max(sizes) < data.size / 4
+
+    def test_colorbar_and_norm_keep_the_finite_range_of_the_full_array(self):
+        data = self._data("float")
+        _, image = self._figure(data, new=True)
+        finite = data[np.isfinite(data)]
+        assert (image.norm.vmin, image.norm.vmax) == (finite.min(), finite.max())
+        assert plt.gci() is image and image.get_cmap().name == "hot"
+        _, plain = self._figure(data, new=False)
+        assert (plain.norm.vmin, plain.norm.vmax) == (image.norm.vmin, image.norm.vmax)
+
+    def test_image_not_denser_than_the_output_goes_to_matplotlib(self):
+        data = self._data("float", shape=(150, 225))
+        _, image = self._figure(data, new=True)
+        assert np.ma.isMaskedArray(image.get_array()) and image.get_array().shape == data.shape
+
+    @pytest.mark.parametrize("origin", ["upper", "lower"])
+    def test_without_extent_the_axes_limits_are_matplotlibs(self, origin):
+        data = self._data("float")
+        fig, image = self._figure(data, new=True, extent=None, origin=origin)
+        new_limits = (fig.axes[0].get_xlim(), fig.axes[0].get_ylim())
+        assert image.get_array().ndim == 3  # reduced
+        fig, _ = self._figure(data, new=False, extent=None, origin=origin)
+        assert new_limits == (fig.axes[0].get_xlim(), fig.axes[0].get_ylim())
+
+    def test_saved_dense_figure_is_small_and_needs_no_collection(self, monkeypatch, tmp_path):
+        collected = []
+        monkeypatch.setattr(figures.gc, "collect", lambda *a: collected.append(1))
+        fig, _ = self._figure(self._data("float"), new=True)
+        assert not figures._dense_images(fig, self.DPI)
+        save_figure(fig, tmp_path / "f.png", bbox_inches="tight", dpi=self.DPI)
+        assert not collected
+
+
+class TestCapWait:
+    def test_main_thread_blocked_at_the_cap_lets_the_drain_pool_write(self, tmp_path, monkeypatch):
+        figures.start(4)  # 1 background worker, 3 drain workers
+        drain = figures._drain
+        try:
+            submitted = []
+            submit = figures._submit
+            monkeypatch.setattr(figures, "_submit", lambda picks: (submitted.extend(p for _, p, _ in picks), submit(picks)))
+            # room for 3 figures: while the background worker writes one, the next ones are held
+            blob = len(pickle.dumps(_scatter(n=20_000), protocol=pickle.HIGHEST_PROTOCOL))
+            monkeypatch.setattr(figures, "MAX_PENDING_BYTES", 3 * blob)
+            for i in range(8):
+                save_figure(_scatter(n=20_000, seed=i), tmp_path / f"{i}.png", dpi=50)
+                assert not figures._draining
+            before_wait = list(submitted)
+            figures.wait()
+        finally:
+            figures.stop()
+        assert drain in before_wait, "no figure went to the drain pool while save_figure waited"
+        assert len(list(tmp_path.glob("*.png"))) == 8

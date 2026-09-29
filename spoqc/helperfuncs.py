@@ -845,14 +845,17 @@ def plot_pixels(
         flip=False
 ):
 
+    dpi = 300
     plt.figure(figsize=(12, 6))
     plt.title(title)
 
     if ( flip ):
         image = np.flipud(image)
 
-    plt.imshow(
+    figures.imshow(
+        plt.gca(),
         image , # I need to flip the image
+        dpi=dpi,
         cmap=cmap,
         extent=[imagedim.bb_xmin, imagedim.bb_xmax, imagedim.bb_ymin, imagedim.bb_ymax], # get the bounding box
         aspect='equal'
@@ -870,7 +873,7 @@ def plot_pixels(
     if ( legend_dict ):
         add_manual_legend(legend_dict, points)
 
-    save_figure(plt.gcf(), f'{figure_path}/imageplot_{suffix}.png', f'{figure_path}/imageplot_{suffix}.pdf', bbox_inches='tight', dpi=300)
+    save_figure(plt.gcf(), f'{figure_path}/imageplot_{suffix}.png', f'{figure_path}/imageplot_{suffix}.pdf', bbox_inches='tight', dpi=dpi)
     plt.close()
 
 

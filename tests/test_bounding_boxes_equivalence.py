@@ -27,7 +27,7 @@ from skimage.morphology import dilation, disk
 import reference_bounding_boxes_66736f2 as ref
 from legacy.parquet_writer import ddf_to_parquet  # origin/dev's writer, the reference for core.parquet
 from spoqc import helperfuncs
-from spoqc.core import raster
+from spoqc.core import figures, raster
 from spoqc.hqr import combine_masks_zoom
 from spoqc.image_analysis import bounding_boxes
 from spoqc.metrics.transcript_density import transcript_density_image
@@ -200,6 +200,13 @@ def captured(module, density=None):
             mock.patch.object(helperfuncs, "plot_pixels", record("plot_pixels"))
         )
         stack.enter_context(mock.patch.object(plt, "imshow", record("imshow")))
+
+        def figures_imshow(ax, *args, dpi=None, **kwargs):
+            # the new code's imshow, recorded as the plt.imshow call it replaces
+            assert ax is plt.gca() and dpi == 300, (ax, dpi)
+            record("imshow")(*args, **kwargs)
+
+        stack.enter_context(mock.patch.object(figures, "imshow", figures_imshow))
         stack.enter_context(mock.patch.object(plt, "plot", record("plot")))
         stack.enter_context(
             mock.patch.object(
