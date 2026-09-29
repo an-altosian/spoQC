@@ -115,9 +115,22 @@ def test_uneven_dask_partitions(tmp_path):
     assert_same_as_old(f"{tmp_path}/d", ALL, n_rows)
 
 
-def test_parts_larger_than_one_scan_batch(tmp_path):
+SMALL_BATCH_ROWS = 1_000  # so a few-thousand-row part spans several scan batches
+SMALL_FILES_PER_DATASET = 5  # so a directory spans several file groups
+
+
+@pytest.mark.parametrize("files_per_dataset", [1, 5, 23, 24, 1000])
+def test_file_groups_keep_the_part_order(tmp_path, monkeypatch, files_per_dataset):
+    monkeypatch.setattr(raster, "_SCAN_FILES_PER_DATASET", files_per_dataset)
+    n_rows = 23 * 500 + 137
+    write_pixel_parts(f"{tmp_path}/d", n_rows, range(0, n_rows, 500), seed=9)
+    assert_same_as_old(f"{tmp_path}/d", ["mask", "beliefs"], n_rows)
+
+
+def test_parts_larger_than_one_scan_batch(tmp_path, monkeypatch):
     """Arrow's scanner splits a row group into batches of raster._SCAN_BATCH_ROWS; rows stay in order."""
-    part = raster._SCAN_BATCH_ROWS * 2 + 3
+    monkeypatch.setattr(raster, "_SCAN_BATCH_ROWS", SMALL_BATCH_ROWS)
+    part = SMALL_BATCH_ROWS * 2 + 3
     n_rows = 2 * part
     write_pixel_parts(f"{tmp_path}/d", n_rows, [0, part], seed=3)
     assert_same_as_old(f"{tmp_path}/d", ["beliefs", "mask"], n_rows)
@@ -166,14 +179,20 @@ def mutant(old, new):
     clone = types.ModuleType("raster_mutant")
     clone.__package__ = raster.__package__
     exec(compile(source.replace(old, new), raster.__file__, "exec"), clone.__dict__)
+    clone._SCAN_BATCH_ROWS = SMALL_BATCH_ROWS
+    clone._SCAN_FILES_PER_DATASET = SMALL_FILES_PER_DATASET
     return clone
 
 
 MUTANTS = {
     "lexicographic part order": ("key=natural_sort_key,", "key=str,"),
     "batches out of order": (
-        "    ).scan_batches():",
-        "    ).scan_batches().__class__ and reversed(list(dataset.scanner(columns=columns).scan_batches())):",
+        "        ).scan_batches()\n",
+        "        ).scan_batches()[::-1] if False else reversed(list(dataset.scanner(columns=columns).scan_batches()))\n",
+    ),
+    "file groups out of order": (
+        "range(0, len(files), _SCAN_FILES_PER_DATASET)",
+        "reversed(range(0, len(files), _SCAN_FILES_PER_DATASET))",
     ),
     "no integer null promotion": ("        if rows:  # pandas'", "        if False:  # pandas'"),
     "nulls left as fill values": ("out[column][np.concatenate(rows)] = np.nan", "pass"),
@@ -182,7 +201,7 @@ MUTANTS = {
 
 
 def mutant_differs(tmp_path, module):
-    part = raster._SCAN_BATCH_ROWS + 1
+    part = SMALL_BATCH_ROWS * 3 + 1
     n_rows = 2 * part + 29 * 500
     write_pixel_parts(f"{tmp_path}/d", n_rows, [0, part, *range(2 * part, n_rows, 500)], seed=8)
     os.makedirs(f"{tmp_path}/n")
@@ -203,7 +222,9 @@ def mutant_differs(tmp_path, module):
     return False
 
 
-def test_the_mutant_check_passes_the_real_reader(tmp_path):
+def test_the_mutant_check_passes_the_real_reader(tmp_path, monkeypatch):
+    monkeypatch.setattr(raster, "_SCAN_BATCH_ROWS", SMALL_BATCH_ROWS)
+    monkeypatch.setattr(raster, "_SCAN_FILES_PER_DATASET", SMALL_FILES_PER_DATASET)
     assert not mutant_differs(tmp_path, raster)
 
 

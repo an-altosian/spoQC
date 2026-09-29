@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 import dask
 import numpy as np
 import pyarrow.dataset as ds
+import pyarrow.parquet as pq
 from dask.utils import natural_sort_key
 from numba import njit, prange
 from scipy import ndimage as ndi
@@ -21,12 +22,25 @@ from scipy.sparse.csgraph import connected_components
 from skimage.morphology import disk
 
 _EIGHT_CONNECTED = np.ones((3, 3), dtype=bool)
-# Arrow scanner settings for read_pixel_columns, measured on 4 cores: hqcr's single 913M-row file
-# (871 row groups) scans at 2.35 cores with the defaults (131,072-row batches, 16 batches ahead)
-# and at 3.95 with these; the 10,000-row hqtr parts gain 1.78 s -> 1.54 s per 10,000 parts.
-_SCAN_BATCH_ROWS = 1 << 20
-_SCAN_BATCH_READAHEAD = 32
-_SCAN_FRAGMENT_READAHEAD = 16
+# read_pixel_columns scans at most this many files per Arrow dataset. A dataset keeps ~24 KB per
+# fragment it has scanned until it is dropped: one dataset over hqtr's 91,296 parts peaked 2.13 GB
+# above its output, datasets of 2,048 parts 0.07 GB (and 13.2 s -> 12.7 s).
+_SCAN_FILES_PER_DATASET = 2048
+_SCAN_BATCH_ROWS = 131_072  # Arrow's default batch size, named so tests can shrink it
+# pre_buffer (Arrow's default) caches whole column chunks ahead of decoding: on hqcr's single
+# 913M-row file it peaked 1.57 GB above the output; without it, 0.0 GB and 2.66 s -> 2.01 s.
+_SCAN_FORMAT = ds.ParquetFileFormat(
+    default_fragment_scan_options=ds.ParquetFragmentScanOptions(pre_buffer=False)
+)
+
+
+def _scan_batches(files, columns):
+    """The files' batches in order, _SCAN_FILES_PER_DATASET files per Arrow dataset."""
+    for first in range(0, len(files), _SCAN_FILES_PER_DATASET):
+        dataset = ds.dataset(files[first : first + _SCAN_FILES_PER_DATASET], format=_SCAN_FORMAT)
+        yield from dataset.scanner(
+            columns=columns, use_threads=True, batch_size=_SCAN_BATCH_ROWS
+        ).scan_batches()
 
 
 def read_pixel_columns(path, columns, n_rows):
@@ -39,7 +53,8 @@ def read_pixel_columns(path, columns, n_rows):
     ten-thousand-row parts per directory, and at that size the cost is per file, not per byte:
     opening each file from Python (a serial metadata pass, then again per column in a thread
     pool) held the GIL for most of it and kept the pool near 1.9 of 4 cores. ScanBatches yields
-    batches in dataset (file list) order and row order within each file (arrow/dataset/scanner.h).
+    batches in dataset (file list) order and row order within each file (arrow/dataset/scanner.h);
+    the files are scanned in consecutive groups so the per-fragment state Arrow keeps is released.
 
     Nulls come out as dask 2026.1 returns them: NaN in a float column, and a null anywhere in an
     integer column promotes the whole column to float64 with NaN. Raises when there are no part
@@ -58,21 +73,14 @@ def read_pixel_columns(path, columns, n_rows):
             raise FileNotFoundError(f"no .parquet part files in {path}")
     else:
         files = [path]
-    dataset = ds.dataset(files, format="parquet")
-    types = {column: dataset.schema.field(column).type for column in columns}
+    types = {column: pq.read_schema(files[0]).field(column).type for column in columns}
     out = {
         column: np.empty(n_rows, dtype=np.dtype(type_.to_pandas_dtype()))
         for column, type_ in types.items()
     }
     null_rows = {column: [] for column in columns}  # integer columns: rows to set NaN at the end
     start, checked = 0, None
-    for tagged in dataset.scanner(
-        columns=columns,
-        use_threads=True,
-        batch_size=_SCAN_BATCH_ROWS,
-        batch_readahead=_SCAN_BATCH_READAHEAD,
-        fragment_readahead=_SCAN_FRAGMENT_READAHEAD,
-    ).scan_batches():
+    for tagged in _scan_batches(files, columns):
         if tagged.fragment.path != checked:  # the first batch of each file
             checked = tagged.fragment.path
             schema = tagged.fragment.physical_schema
