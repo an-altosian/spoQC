@@ -1,13 +1,12 @@
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import geopandas as gpd
 import scipy.sparse as sp
 
-from libpysal.weights import Queen
 
 from ... import helperfuncs
 from spoqc.core.figures import save_figure
+from spoqc.core.moran import queen_weights
 
 # Vectorized Moran's I for all genes at once, given a shared sparse weights matrix.
 # The one Moran's I implementation: the global ambient (NaN for degenerate genes, which
@@ -40,13 +39,9 @@ def calculate_global_moran_I_values(sdata, figure_path, spoqc_tmp_folder):
 
     genes_list = np.array(rna_adata.var_names)
 
-    coords = rna_adata.obsm['spatial']
-    gdf = gpd.GeoDataFrame({'x': coords[:, 0], 'y': coords[:, 1]},
-                            geometry=gpd.points_from_xy(coords[:, 0], coords[:, 1]))
-
     # Create spatial-neighbor weights using queen contiguity, once for all genes
     # (coordinates, and therefore the weights matrix, don't depend on the gene).
-    w = Queen.from_dataframe(gdf)
+    w = queen_weights(rna_adata.obsm['spatial'])
     w.transform = "r"
     weights = w.sparse
 
