@@ -13,6 +13,7 @@ from concurrent.futures.process import BrokenProcessPool
 
 import matplotlib
 import matplotlib.pyplot as plt
+import numba
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -809,6 +810,7 @@ class TestOrphanedWorkers:
 import os, sys
 from spoqc.core import figures
 import matplotlib.pyplot as plt
+import numba
 figures.start(2)
 fig, ax = plt.subplots(); ax.plot([0, 1])
 figures.save_figure(fig, {str(tmp_path / 'a.png')!r})
@@ -1028,10 +1030,136 @@ class TestCapWait:
             monkeypatch.setattr(figures, "MAX_PENDING_BYTES", 3 * blob)
             for i in range(8):
                 save_figure(_scatter(n=20_000, seed=i), tmp_path / f"{i}.png", dpi=50)
-                assert not figures._draining
+                assert figures._cap_wait is None
             before_wait = list(submitted)
             figures.wait()
         finally:
             figures.stop()
         assert drain in before_wait, "no figure went to the drain pool while save_figure waited"
         assert len(list(tmp_path.glob("*.png"))) == 8
+
+    def test_drain_at_the_cap_stops_when_it_clears_and_the_main_thread_resumes_with_a_free_core(self, monkeypatch):
+        budget = 4  # 1 background worker, 3 drain workers
+        figures.start(budget)
+        drain_workers = figures._workers[figures._drain]
+        drain_picks = []  # (cap still holding, wait() draining) for each drain reservation
+        returns = []  # (drain workers busy, all workers busy) as each save_figure returns
+        computing = []  # (save_figure call, drain busy, all busy) while the main thread "computes"
+        in_save = threading.Event()
+        done = threading.Event()
+
+        def counts():
+            pools = [pool for pool, _ in (*figures._in_flight.values(), *figures._reserved.values())]
+            return pools.count(figures._drain), len(pools)
+
+        reserve = figures._reserve
+
+        def recording_reserve():
+            picks = reserve()
+            cap_holds = figures._cap_wait is not None and figures._over_cap(figures._cap_wait)
+            drain_picks.extend((cap_holds, figures._draining) for _, p, _ in picks if p is figures._drain)
+            return picks
+
+        def sample():
+            while not done.is_set():
+                with figures._state:
+                    if not in_save.is_set() and returns:
+                        computing.append((len(returns) - 1, *counts()))
+                time.sleep(0.001)
+
+        monkeypatch.setattr(figures, "_reserve", recording_reserve)
+        sampler = threading.Thread(target=sample, daemon=True)
+        try:
+            blob = len(pickle.dumps(_SleepInWorker(0.2), protocol=pickle.HIGHEST_PROTOCOL))
+            # room for 5: more held figures than the background worker and the drain pool take
+            monkeypatch.setattr(figures, "MAX_PENDING_BYTES", 5 * blob)
+            sampler.start()
+            for _ in range(20):
+                in_save.set()
+                save_figure(_SleepInWorker(0.2))
+                with figures._state:
+                    returns.append(counts())
+                    in_save.clear()
+                time.sleep(0.02)  # the main thread computes the next figure
+            done.set()
+            sampler.join()
+            loop_picks = list(drain_picks)
+            figures.wait()
+        finally:
+            done.set()
+            figures.stop()
+        assert loop_picks, "no figure went to the drain pool while save_figure waited at the cap"
+        # the drain pool is handed figures only while a save_figure is blocked past the cap
+        assert all(cap_holds and not draining for cap_holds, draining in loop_picks), loop_picks
+        # right after a cap wait: a drain worker is free, so the main thread has its core
+        assert all(drain < drain_workers and total <= budget - 1 for drain, total in returns), returns
+        # while it computes, drain renders finish without being replaced and the budget holds
+        assert computing
+        assert all(drain <= returns[call][0] and total <= budget - 1 for call, drain, total in computing), computing
+
+    def test_a_write_error_while_blocked_at_the_cap_is_raised_not_waited_on(self, monkeypatch):
+        class Interrupt(BaseException):
+            pass
+
+        def interrupted_submit(*args):
+            raise Interrupt
+
+        def broken_submit(*args):
+            raise BrokenProcessPool("pool broke")
+
+        figures.start(4)
+        try:
+            # a figure held with nothing in flight and no error recorded
+            monkeypatch.setattr(figures._executor, "submit", interrupted_submit)
+            with pytest.raises(Interrupt):
+                save_figure(_SleepInWorker(0))
+            assert len(figures._held) == 1 and not figures._in_flight and not figures._errors
+            # the next figure is over the cap; handing the held one out fails, so nothing will notify
+            monkeypatch.setattr(figures._executor, "submit", broken_submit)
+            monkeypatch.setattr(figures._drain, "submit", broken_submit)
+            monkeypatch.setattr(figures, "MAX_PENDING_BYTES", 1)
+            result = {}
+
+            def blocked_save():
+                try:
+                    save_figure(_SleepInWorker(0))
+                    result["error"] = None
+                except BaseException as error:  # noqa: BLE001 - handed to the test
+                    result["error"] = error
+
+            thread = threading.Thread(target=blocked_save, daemon=True)
+            thread.start()
+            thread.join(30)
+            assert "error" in result, "save_figure hung at the cap after a write error"
+            assert isinstance(result["error"], BrokenProcessPool)
+            assert figures._cap_wait is None
+        finally:
+            monkeypatch.undo()
+            figures.abort()
+
+
+class TestMainThreadKernels:
+    def test_image_kernels_run_on_the_budget_less_the_busy_workers_with_the_same_result(self, monkeypatch):
+        data = np.random.default_rng(0).random((3000, 4000))
+
+        def draw():
+            fig = plt.figure(figsize=(2, 2), dpi=50)
+            return figures.imshow(fig.add_axes((0, 0, 1, 1)), data, dpi=50).get_array().copy()
+
+        alone = draw()
+        figures.start(4)
+        try:
+            save_figure(_SleepInWorker(3))
+            _until(lambda: figures._in_flight)  # the background worker is busy
+            used = []
+            for name in ("_finite_range", "_colour_blocks"):
+                kernel = getattr(figures, name)
+                monkeypatch.setattr(figures, name, lambda *a, k=kernel: used.append(numba.get_num_threads()) or k(*a))
+            before = numba.get_num_threads()
+            beside_a_worker = draw()
+            after = numba.get_num_threads()
+        finally:
+            figures.stop()
+        assert used == [max(1, min(numba.config.NUMBA_NUM_THREADS, 4 - 1))] * 2
+        assert after == before
+        assert np.array_equal(alone, beside_a_worker)
