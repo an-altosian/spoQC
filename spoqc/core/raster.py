@@ -23,9 +23,27 @@ from skimage.morphology import disk
 _EIGHT_CONNECTED = np.ones((3, 3), dtype=bool)
 
 
-def read_pixel_column(path, column, threads):
+def _part_files(path):
+    """The parquet files of a per-pixel parquet (a single file, or a directory of part.N.parquet)
+    in the order dask.dataframe.read_parquet reads them."""
+    if not os.path.isdir(path):
+        return [path]
+    # dask orders its part files naturally (part.2 before part.10), not lexicographically.
+    names = sorted((n for n in os.listdir(path) if n.endswith(".parquet")), key=natural_sort_key)
+    if not names:
+        raise FileNotFoundError(f"no .parquet part files in {path}")
+    return [os.path.join(path, n) for n in names]
+
+
+def pixel_rows(path):
+    """The number of rows of a per-pixel parquet (file or directory), from the footers alone."""
+    return sum(pq.ParquetFile(file).metadata.num_rows for file in _part_files(path))
+
+
+def read_pixel_column(path, column, threads, out=None):
     """Read one column of a per-pixel parquet (a single file, or a dask directory of part.N.parquet)
     into a 1-D numpy array in the row order dask.dataframe.read_parquet returns.
+    With `out` (a 1-D array of the column's length) the values are cast into it and it is returned.
 
     Row groups are decoded in parallel into one preallocated array. Nulls come out as dask 2026.1
     returns them: NaN in a float column, and a null anywhere in an integer column promotes the whole
@@ -33,17 +51,7 @@ def read_pixel_column(path, column, threads):
     there are no part files, when the parts disagree on the column's type, or when a non-numeric
     column holds nulls (dask would return an object array).
     """
-    if os.path.isdir(path):
-        # dask orders its part files naturally (part.2 before part.10), not lexicographically.
-        names = sorted(
-            (n for n in os.listdir(path) if n.endswith(".parquet")),
-            key=natural_sort_key,
-        )
-        files = [os.path.join(path, n) for n in names]
-        if not files:
-            raise FileNotFoundError(f"no .parquet part files in {path}")
-    else:
-        files = [path]
+    files = _part_files(path)
     pieces, sizes, types, nulls = [], [], set(), 0
     for file in files:
         meta = pq.ParquetFile(file)
@@ -61,7 +69,10 @@ def read_pixel_column(path, column, threads):
     elif nulls and dtype.kind != "f":
         raise ValueError(f"{nulls} nulls in the {dtype} column {column} of {path}")
     starts = np.concatenate([[0], np.cumsum(sizes, dtype=np.int64)])
-    out = np.empty(int(starts[-1]), dtype=dtype)
+    if out is None:
+        out = np.empty(int(starts[-1]), dtype=dtype)
+    elif out.shape != (starts[-1],):
+        raise ValueError(f"{path} has {starts[-1]} rows, out has shape {out.shape}")
 
     def read(i):
         file, group = pieces[i]

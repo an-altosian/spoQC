@@ -458,7 +458,7 @@ RASTER_MUTANTS = {
         "hit[x] |= gaps[source, x] <= width",
         "hit[x] |= gaps[source, x] < width",
     ),
-    "lexicographic parts": ("key=natural_sort_key,", "key=None,"),
+    "lexicographic parts": ("key=natural_sort_key)", "key=None)"),
     "image not flipped": ("    return np.flipud(image)", "    return image"),
     "wrong channel": ("channel = int(staining) if staining else 0", "channel = 0"),
 }
