@@ -213,6 +213,22 @@ class TestImageReduction:
         fig, _ = self._imshow(data, interpolation_stage="data")
         assert self._reduced_shape(fig) is None
 
+    def test_collect_closed_frees_a_closed_figures_image(self):
+        import gc
+        import weakref
+
+        gc.disable()  # no automatic collection may free it first
+        try:
+            fig, ax = self._imshow(np.zeros((1000, 1000)))
+            image = weakref.ref(ax.images[0])
+            plt.close(fig)
+            del fig, ax
+            assert image() is not None  # a closed figure is a reference cycle
+            figures.collect_closed()
+            assert image() is None
+        finally:
+            gc.enable()
+
     @pytest.mark.parametrize("interpolation", ["nearest", "none"])
     def test_nearest_and_none_interpolation_are_never_reduced(self, interpolation):
         fig, _ = self._imshow(np.zeros((4000, 4000), dtype=np.float32), interpolation=interpolation)

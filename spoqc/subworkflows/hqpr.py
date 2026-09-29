@@ -1,5 +1,6 @@
 from .. import helperfuncs
 from .. import image_analysis
+from ..core import figures
 
 CLUSTERING_STEPS = ['all', 'unittest', 'hqpr', 'hqpr_clustering']
 
@@ -43,6 +44,7 @@ def get_hqpr(
             helperfuncs.PIXEL_FEATURES.clear()
 
         print('[finish]')
+        figures.collect_closed()
 
 
     if ( CONST.STEP in CLUSTERING_STEPS ):
@@ -67,7 +69,8 @@ def get_hqpr(
             background_intensity=background_intensity,
         )
 
-        print('[finish]')   
+        print('[finish]')
+        figures.collect_closed()
 
     if ( CONST.STEP in ['all', 'unittest', 'hqpr', 'hqpr_refinement'] ):
 
@@ -84,6 +87,7 @@ def get_hqpr(
         )
 
         print('[finish]')
+        figures.collect_closed()
 
 
     if ( CONST.STEP in ['all', 'unittest', 'hqpr', 'hqpr_bounding_box'] ):
@@ -104,6 +108,7 @@ def get_hqpr(
         )
 
         print('[finish]')
+        figures.collect_closed()
 
 # In[]
 
@@ -127,3 +132,4 @@ def celltype_refinement_of_hqpr(sdata, spoqc_tmp_folder, imagedim, dim_x, dim_y,
         )
 
         print("[finish]")
+        figures.collect_closed()

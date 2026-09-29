@@ -1,6 +1,7 @@
 
 from .. import helperfuncs
 from .. import image_analysis
+from ..core import figures
 
 CLUSTERING_STEPS = ['all', 'unittest', 'hqtr', 'hqtr_clustering']
 from .. import metrics
@@ -42,6 +43,7 @@ def get_hqtr(
             helperfuncs.PIXEL_FEATURES.clear()
 
         print('[finish]')
+        figures.collect_closed()
 
     if ( CONST.STEP in ['all', 'unittest', 'hqtr', 'hqtr_qv'] ):
 
@@ -58,6 +60,7 @@ def get_hqtr(
         )
 
         print('[finish]')
+        figures.collect_closed()
 
     if ( CONST.STEP in ['all', 'unittest', 'hqtr', 'hqtr_ac'] ):
 
@@ -75,6 +78,7 @@ def get_hqtr(
         )
 
         print('[finish]')
+        figures.collect_closed()
 
     if ( CONST.STEP in CLUSTERING_STEPS ):
 
@@ -97,6 +101,7 @@ def get_hqtr(
         )
 
         print("[finish]")
+        figures.collect_closed()
 
 
 # In[]
@@ -115,6 +120,7 @@ def get_hqtr(
         )
 
         print('[finish]')
+        figures.collect_closed()
 
     if ( CONST.STEP in ['all', 'unittest', 'hqtr', 'hqtr_bounding_box'] ):
 
@@ -134,6 +140,7 @@ def get_hqtr(
         )
 
         print('[finish]')
+        figures.collect_closed()
 
 
 def celltype_refinement_of_hqtr(sdata, spoqc_tmp_folder, imagedim, dim_x, dim_y, CONST):
@@ -155,3 +162,4 @@ def celltype_refinement_of_hqtr(sdata, spoqc_tmp_folder, imagedim, dim_x, dim_y,
         )
 
         print("[finish]")
+        figures.collect_closed()

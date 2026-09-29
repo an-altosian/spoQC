@@ -16,6 +16,7 @@ thread budget (spoqc.cli: THREADS // THREADS_PER_FIGURE_WORKER) and should give 
 threads the rest.
 """
 
+import gc
 import io
 import multiprocessing
 import os
@@ -222,6 +223,17 @@ def save_figure(fig, *paths, exact=False, **kwargs):
             del _pending[future]
             future.result()
     _pending[_executor.submit(_write, blob, rc, paths, exact, kwargs)] = len(blob)
+
+
+def collect_closed():
+    """Free the figures closed so far; call it where a step that drew full-resolution images ends.
+
+    A closed matplotlib figure is a reference cycle that only the cyclic garbage collector frees,
+    and each imshow holds its own copy of the array it shows (8 B/px for float64). CPython rarely
+    runs a full collection, so on a 913 Mpx slide hqtr's closed figures held ~58 GB going into
+    the refinement.
+    """
+    gc.collect()
 
 
 def start(workers):
