@@ -34,6 +34,14 @@ def pool():
     figures.stop()
 
 
+@pytest.fixture(autouse=True)
+def _close_figures():
+    """Close every pyplot figure a test leaves open: later code draws on the current figure
+    (plt.gcf(), seaborn), and a leftover one, e.g. an extent-less NonUniformImage, breaks it."""
+    yield
+    plt.close("all")
+
+
 def _until(condition, timeout=60):
     deadline = time.monotonic() + timeout
     while not condition():
