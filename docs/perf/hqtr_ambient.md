@@ -65,7 +65,7 @@ The formulation, the most correct of the four:
 - **Density:** `scipy.stats.norm.pdf`, the library implementation, rather than the formula typed out by hand.
 - **Peak:** `norm.pdf(mean)`, the density's true maximum. `np.max(pdf)` over the values is below the peak whenever no value sits exactly at the mean. For the negative probes it then made the tail cells and the cells as far below the mean equally "worst": with no cell at exactly t = 1 probe, every prior was 0 and min-max gave 0 / 0 = NaN for every cell (`tests/test_gaussian_prior.py`).
 - **Min-max:** `(x - min) / (max - min)`: one rounding, and exactly 0 and 1 at the extremes. MinMaxScaler's `x * (1 / range) + (0 - min / range)` has three roundings. A zero range now scales to 0 (MinMaxScaler's rule) instead of 0 / 0 = NaN, and NaN values are skipped.
-- **GMM:** the mixture is still fitted where origin/dev fitted it, even when `t` and `std` override its result (negative probes). Its k-means initialisation draws from numpy's global random state, so dropping a fit would change every later GMM fit in the run. The pixel-score parameters and the global random state after the fit are identical (tested).
+- **GMM:** the mixture is still fitted where origin/dev fitted it, even when `t` and `std` override its result (negative probes). origin/dev's fits drew their k-means initialisation from numpy's global random state; every fit now takes `random_state=seed`, the run's seed (part 1, user decision 2026-09-30), so it neither reads nor advances the global state. With origin/dev's global state seeded to the same seed, the pixel-score parameters are identical (tested).
 
 **Difference on the crop**, on the real inputs of an origin/dev-equivalent run (`2fe97e2`), each prior computed both ways:
 

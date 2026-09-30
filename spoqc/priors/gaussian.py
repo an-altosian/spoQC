@@ -17,15 +17,16 @@ from scipy.stats import norm
 from sklearn.mixture import GaussianMixture
 
 
-def gmm_parameters(values, n_components, t=None, std=None):
+def gmm_parameters(values, n_components, t=None, std=None, *, seed):
     """
     (mean, std) of the prior: the mean and std of the highest-mean component of a Gaussian
     mixture fitted to `values`; `t` replaces the mean (and sets the std to 1.0), `std` the std.
 
-    The mixture is always fitted, as it was: its k-means initialisation draws from numpy's
-    global random state, which later GMM fits in the same run continue from.
+    The mixture is always fitted, as it was, with random_state=seed (the run's seed): the fit
+    neither reads nor advances numpy's global random state, so it gives the same result in any
+    step order and when its step runs alone.
     """
-    mix = GaussianMixture(n_components=n_components, tol=1e-8, max_iter=int(1e4))
+    mix = GaussianMixture(n_components=n_components, tol=1e-8, max_iter=int(1e4), random_state=seed)
     mix.fit(np.asarray(values).reshape(-1, 1))
     means = mix.means_
     cov = mix.covariances_
