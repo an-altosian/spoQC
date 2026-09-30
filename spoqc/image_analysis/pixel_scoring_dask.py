@@ -150,7 +150,8 @@ def start_pixel_qc(
         figure_path,
         gmm_mod=3,
         nstds=nstds_p,
-        t=thresh_p
+        t=thresh_p,
+        seed=seed,
     )    
 
     ########################
