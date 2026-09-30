@@ -120,7 +120,7 @@ class TestAgainstOrigin:
         np.random.seed(0)
         untouched = np.random.random()
         np.random.seed(0)
-        got = pixel_score.calc_probs_pixel_score(scores, None, 3, 6, seed=5)
+        got = pixel_score.calc_probs_pixel_score(scores, None, 3, 6, seed=5, n_init=1)
         assert_same_array(got, expected, "pixel score density")
         assert np.random.random() == untouched  # the seeded fit draws nothing from the global state
 
@@ -141,7 +141,7 @@ class TestAgainstOrigin:
         df = pd.DataFrame({"control_probe_counts": counts})
         np.random.seed(6)
         expected = legacy("negative_probe_counts", "spoqc.priors.hqcr").calc_probs(df, None)
-        assert_same_array(negative_probe_counts.calc_probs(df, None, seed=6), expected, "negative probes")
+        assert_same_array(negative_probe_counts.calc_probs(df, None, seed=6, n_init=1), expected, "negative probes")
 
     def test_negative_probes_without_a_cell_at_the_mean(self):
         """origin/dev took the peak as the largest density among the cells. With no cell at t = 1
@@ -152,7 +152,7 @@ class TestAgainstOrigin:
         np.random.seed(6)
         with np.errstate(invalid="ignore"):
             expected = legacy("negative_probe_counts", "spoqc.priors.hqcr").calc_probs(df, None)
-        got = negative_probe_counts.calc_probs(df, None, seed=6)
+        got = negative_probe_counts.calc_probs(df, None, seed=6, n_init=1)
         assert np.isnan(expected).all()
         assert got.tolist() == [1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
 
