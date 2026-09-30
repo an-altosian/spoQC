@@ -7,8 +7,9 @@ from scipy.stats import norm
 from sklearn.mixture import GaussianMixture
 from dask_ml.preprocessing import MinMaxScaler
 
-def calc_probs_pixel_score(pixel_scores, figure_path, gmm_mod=3, nstds=1, t=None, std=None):
-    mix = GaussianMixture(n_components=gmm_mod, tol=1e-8, max_iter=int(1e4))
+def calc_probs_pixel_score(pixel_scores, figure_path, gmm_mod=3, nstds=1, t=None, std=None, *, seed):
+    # seeded: the fit neither reads nor advances numpy's global RNG, so it is independent of step order
+    mix = GaussianMixture(n_components=gmm_mod, tol=1e-8, max_iter=int(1e4), random_state=seed)
     mix.fit(pixel_scores.reshape(-1, 1))
     means = mix.means_
     cov = mix.covariances_
