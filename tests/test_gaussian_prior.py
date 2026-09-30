@@ -112,15 +112,17 @@ class TestDensity:
 
 class TestAgainstOrigin:
     def test_pixel_score_density_is_bit_identical(self):
-        """hqpr/hqtr: the GMM parameters (same global random state) and the density are unchanged."""
+        """hqpr/hqtr: with origin/dev's global random state seeded to the prior's seed, the GMM
+        parameters and the density are unchanged; the seeded prior leaves the global state alone."""
         scores = np.random.default_rng(3).gamma(2.0, 1.0, 100)
         np.random.seed(5)
         expected = legacy("pixel_score_prior", "spoqc.priors.hqpr").calc_probs_pixel_score(scores, None, 3, 6)
-        after_origin = np.random.random()
-        np.random.seed(5)
-        got = pixel_score.calc_probs_pixel_score(scores, None, 3, 6)
+        np.random.seed(0)
+        untouched = np.random.random()
+        np.random.seed(0)
+        got = pixel_score.calc_probs_pixel_score(scores, None, 3, 6, seed=5)
         assert_same_array(got, expected, "pixel score density")
-        assert np.random.random() == after_origin  # the fit draws as much of the global random state
+        assert np.random.random() == untouched  # the seeded fit draws nothing from the global state
 
     @pytest.mark.parametrize("all_singlets", [False, True])
     def test_doublet_distance_is_bit_identical(self, all_singlets):
@@ -139,8 +141,7 @@ class TestAgainstOrigin:
         df = pd.DataFrame({"control_probe_counts": counts})
         np.random.seed(6)
         expected = legacy("negative_probe_counts", "spoqc.priors.hqcr").calc_probs(df, None)
-        np.random.seed(6)
-        assert_same_array(negative_probe_counts.calc_probs(df, None), expected, "negative probes")
+        assert_same_array(negative_probe_counts.calc_probs(df, None, seed=6), expected, "negative probes")
 
     def test_negative_probes_without_a_cell_at_the_mean(self):
         """origin/dev took the peak as the largest density among the cells. With no cell at t = 1
@@ -151,8 +152,7 @@ class TestAgainstOrigin:
         np.random.seed(6)
         with np.errstate(invalid="ignore"):
             expected = legacy("negative_probe_counts", "spoqc.priors.hqcr").calc_probs(df, None)
-        np.random.seed(6)
-        got = negative_probe_counts.calc_probs(df, None)
+        got = negative_probe_counts.calc_probs(df, None, seed=6)
         assert np.isnan(expected).all()
         assert got.tolist() == [1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
 

@@ -216,7 +216,9 @@ def run_pixel_qc(impl, root, modality, image, seed, **extra):
     staining = "0" if modality == "hqpr" else None
     figures = f"{root}/figs"
     os.makedirs(f"{figures}/{modality}/{modality}_clustering/{staining or ''}", exist_ok=True)
-    np.random.seed(123)  # the GMM prior draws from the global RNG
+    # the reference's GMM prior draws from the global RNG; seeded with `seed` it fits exactly as
+    # the new random_state=seed prior
+    np.random.seed(seed)
     return impl.start_pixel_qc(
         fake_sdata(image), figures, f"{root}/tmp", modality, "morphology_focus", "scale0",
         image.shape[0], image.shape[1], helperfuncs.ImageDimStruct(0, 0, image.shape[1], image.shape[0]),

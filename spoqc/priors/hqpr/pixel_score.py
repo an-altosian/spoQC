@@ -4,8 +4,8 @@ from ... import helperfuncs
 from .. import gaussian
 
 
-def calc_probs_pixel_score(pixel_scores, figure_path, gmm_mod=3, nstds=1, t=None, std=None):
-    max_mean, max_std = gaussian.gmm_parameters(pixel_scores, gmm_mod, t, std)
+def calc_probs_pixel_score(pixel_scores, figure_path, gmm_mod=3, nstds=1, t=None, std=None, *, seed):
+    max_mean, max_std = gaussian.gmm_parameters(pixel_scores, gmm_mod, t, std, seed=seed)
 
     print(f'Using std {max_std} and mean {max_mean} for pixel prior')
 
