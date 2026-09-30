@@ -3,6 +3,14 @@ from __future__ import annotations
 import argparse
 
 
+def positive_int(value: str) -> int:
+    """argparse type: an integer >= 1."""
+    number = int(value)
+    if number < 1 or str(number) != value.strip():
+        raise argparse.ArgumentTypeError(f"must be an integer >= 1, got {value!r}")
+    return number
+
+
 def build_parser() -> argparse.ArgumentParser:
 
     print("[NOTE] Use arguments")
@@ -130,6 +138,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=5_000_000,
         help="Number of pixels randomly subsampled to fit the pixel-cluster MiniBatchKMeans model (hqpr/hqtr). The full dataset is then labeled in parallel using the fitted model.",
+        required=False
+    )
+    parser.add_argument(
+        "--gmm_n_init",
+        dest="gmm_n_init",
+        type=positive_int,
+        default=1,
+        help="Number of k-means starts for each GaussianMixture prior fit (hqcr negative probes, hqpr/hqtr pixel scores); the fit with the highest likelihood is kept. The 3-component pixel-score fit can have several optima. Default 1 (one seeded start).",
         required=False
     )
     parser.add_argument(

@@ -155,6 +155,9 @@ def main(args_ns: argparse.Namespace) -> None:
         def KMEANS_SAMPLE_SIZE():
             return args['kmeans_sample_size']
         @constant
+        def GMM_N_INIT():
+            return args['gmm_n_init']
+        @constant
         def THRESHOLD_PRIOR_PIXEL():
             return args['thresh_prior_pixel']
         @constant

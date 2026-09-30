@@ -75,6 +75,7 @@ def start_pixel_qc(
         staining=None,
         thresh_p=None,
         nstds_p=None,
+        gmm_n_init,
     ):
 
     timer = helperfuncs.Timer()
@@ -152,6 +153,7 @@ def start_pixel_qc(
         nstds=nstds_p,
         t=thresh_p,
         seed=seed,
+        n_init=gmm_n_init,
     )    
 
     ########################
