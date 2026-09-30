@@ -279,7 +279,7 @@ def test_start_pixel_qc_matches_reference_up_to_the_unified_min_max(tmp_path, mo
     extra = {}
     if modality == "hqpr" and handoff == "in_memory":
         extra["background_intensity"] = utility.estimate_background_intensity(np.flipud(image))[0]
-    beliefs = run_pixel_qc(pixel_scoring_dask, roots["new"], modality, image, seed=11, **extra)
+    beliefs = run_pixel_qc(pixel_scoring_dask, roots["new"], modality, image, seed=11, gmm_n_init=1, **extra)
 
     new_dir = f"{roots['new']}/tmp/{prefix}_output_mask_raw"
     n = image.size

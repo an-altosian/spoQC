@@ -32,7 +32,7 @@ def asymmetric_evidence_aggregation(priors, gamma=2.0, axis=-1):
 
 
 # We will combine the pixel scorep prior with more priors
-def combine_priors_hqcr(sdata, figure_path, cell_df, qc_domains_adata, counts, doublet_prior_std, threads, seed):
+def combine_priors_hqcr(sdata, figure_path, cell_df, qc_domains_adata, counts, doublet_prior_std, threads, seed, gmm_n_init):
 
     prior_transcript_counts, cell_df = priors.hqcr.transcript_and_gene_counts.calc_counts_probs(
         sdata, 
@@ -57,6 +57,7 @@ def combine_priors_hqcr(sdata, figure_path, cell_df, qc_domains_adata, counts, d
         cell_df,
         figure_path,
         seed=seed,
+        n_init=gmm_n_init,
     )
     prior_invalid_cell_geometry = priors.hqcr.invalid_geometry.calc_probs(sdata, figure_path, 'cell')
     prior_invalid_nucelus_geometry = priors.hqcr.invalid_geometry.calc_probs(sdata, figure_path, 'nucleus')

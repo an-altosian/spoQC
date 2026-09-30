@@ -87,6 +87,7 @@ def start_pixel_qc(
         thresh_p=None,
         nstds_p=None,
         background_intensity=None,
+        gmm_n_init,
     ):
     """Cluster pixels on their metrics, score the clusters and write {prefix}_output_mask_raw.
 
@@ -176,6 +177,7 @@ def start_pixel_qc(
             nstds=nstds_p,
             t=thresh_p,
             seed=seed,
+            n_init=gmm_n_init,
         )
 
         ########################

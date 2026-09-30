@@ -4,9 +4,9 @@ from ... import helperfuncs
 from .. import gaussian
 
 
-def calc_probs(df, figure_path, gmm_mod=1, nstds=1, t=1, std=1, tail="right", *, seed):
+def calc_probs(df, figure_path, gmm_mod=1, nstds=1, t=1, std=1, tail="right", *, seed, n_init):
     values = np.array(df["control_probe_counts"])
-    max_mean, max_std = gaussian.gmm_parameters(values, gmm_mod, t, std, seed=seed)
+    max_mean, max_std = gaussian.gmm_parameters(values, gmm_mod, t, std, seed=seed, n_init=n_init)
 
     print(f'Using std {max_std} and mean {max_mean} for pixel prior and tail {tail}')
 
