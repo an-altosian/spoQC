@@ -1,6 +1,6 @@
 # hqcr clustering: changes from origin/dev
 
-Measurements are on the full `breast2.zarr` table (167,780 cells, 313 genes), with the QC metrics from the integration2 `-s all` run's tmp files, on 4 threads.
+Measurements are on the full `breast2.zarr` table (167,780 cells, 313 genes), with the QC metrics from the tmp files of a full `-s all` run, on 4 threads.
 The rebuilt input reproduces that run: its per-cell 3-level `qc_cluster_str` and `hqcr_traffic_light` match the run's on all 167,780 cells.
 
 ## 1. Performance [bit-identical]
@@ -14,7 +14,7 @@ The kNN graph, `.uns['neighbors']`, the Leiden labels and numpy's global RNG sta
 | `core.knn.neighbors` skips `PyNNDescentTransformer`'s `compress_index()`: it builds search trees scanpy never queries, after the graph is returned. On sparse input pynndescent 0.6.0 allocates (n_nodes, 2, n_obs) float32 there, 24.7 GB for this table. | 23.2 s (py-spy); on 40,000 cells peak RSS 2.37 -> 0.97 GB |
 | The random-projection forest is built on the thread budget. Tree RNG states are drawn before the joblib call, and NN-descent keeps `n_jobs=1`. pynndescent takes one `n_jobs` for both and accepts no prebuilt forest, so during the fit its module-global `make_forest` is swapped for a wrapper that only changes `n_jobs`: under a lock, restored in a `finally`, refusing if other code has replaced it. | 66.3 -> 49.6 s (warm, 4 threads) |
 
-Leiden (leidenalg, `n_iterations=-1`) is unchanged: the user kept it exact.
+Leiden (leidenalg, `n_iterations=-1`) is unchanged and stays exact.
 
 Tests: `tests/test_hqcr_clustering_differential.py`, `tests/realdata_hqcr_clustering.py`.
 
@@ -39,7 +39,7 @@ Table after hqcr, origin/dev vs now (`tests/realdata_hqcr_view_write.py`):
 
 Now `X` and `layers['normlog']` after hqcr equal the table before hqcr, entry for entry.
 
-Later steps that read these matrices (cli.py order, integration2):
+Later steps that read these matrices (cli.py order):
 
 | Step | Reads | Effect on breast2 `-s all` (no annotation file) |
 | --- | --- | --- |
