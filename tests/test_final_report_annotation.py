@@ -4,7 +4,7 @@ cli.py runs the analysis step (analysis/overview, analysis/cluster) only when an
 is given, but origin/dev's report read those figures unconditionally and crashed without one.
 The report now includes those sections only when annotated=True. The tests check three things:
 - With an annotation, report.html and report_p*.html are byte-identical to the pre-change
-  function (tests/legacy/final_report.py, perf/post-hqtr-steps e730c9a = db00d98's report code).
+  function (tests/legacy/final_report.py, origin/dev db00d98's report code).
 - Without an annotation, the report completes.
 - With an annotation, a missing analysis figure still raises.
 """

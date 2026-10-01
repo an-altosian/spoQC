@@ -188,7 +188,7 @@ class TestFlagTranscriptsNearDoublets:
 
 
 def _legacy_write_transcript_doublets(sdata, key_transcripts, corrected_doublet_df, distance_thresh, threads, spoqc_tmp_folder):
-    """perf/integration 66736f2 doublet_score.py:223-238, verbatim."""
+    """The previous transcript-doublet write (doublet_score.py:223-238), verbatim."""
     from spoqc import helperfuncs
 
     # Have to call this again because overlpy corrects also the transcript coordinates
