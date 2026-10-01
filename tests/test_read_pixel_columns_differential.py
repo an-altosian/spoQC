@@ -1,4 +1,4 @@
-"""core.raster.read_pixel_columns vs the reader it replaced, verbatim below (perf/integration2 1cd6406).
+"""core.raster.read_pixel_columns vs the reader it replaced, verbatim below.
 
 The old reader opened every part twice per column (a serial metadata pass, then a per-row-group
 thread pool); the new one reads the footers once, then decodes every row group once for all
