@@ -1,7 +1,7 @@
 # ambientqc and hqtr transcript images: changes from origin/dev
 
-Everything in `subworkflows/qc_ambient.py` and the hqtr-specific steps (transcript density, qv and ac images, global and local Moran's I, the qv/ac priors) gives the same values as origin/dev db00d98, bit for bit, except for the changes below, which the user decided on 2026-09-28.
-Measurements are on a real 4000 x 4000 crop of `breast2.zarr` (x 16000-20000, y 10000-14000: 16,000,000 pixels, 547,140 transcripts, 2,222 cells), `-n 4`, with the tmp folder on NFS (`/home`).
+Everything in `subworkflows/qc_ambient.py` and the hqtr-specific steps (transcript density, qv and ac images, global and local Moran's I, the qv/ac priors) gives the same values as origin/dev db00d98, bit for bit, except for the changes below.
+Measurements are on a real 4000 x 4000 crop of `breast2.zarr` (x 16000-20000, y 10000-14000: 16,000,000 pixels, 547,140 transcripts, 2,222 cells), `-n 4`, with the tmp folder on NFS.
 Full-slide numbers (912,950,048 pixels) are linear extrapolations, x57.06.
 
 ## 1. Prior parquet layout: 1,000,000-row parts, only the columns that are read
@@ -46,7 +46,7 @@ They are now written in `core.parquet.PART_ROWS`-row parts and decoded in parall
 For a given part layout it writes the bytes dask's `to_parquet` wrote, including NaN written as null.
 `helperfuncs.ddf_to_parquet` is deleted; its verbatim copy in `tests/legacy/parquet_writer.py` is the reference in the tests.
 
-## 2. One Gaussian prior (duplicates #18): `priors/gaussian.py`
+## 2. One Gaussian prior: `priors/gaussian.py`
 
 **origin/dev:** four copies of "score values by a normal density, then min-max scale":
 
@@ -65,9 +65,9 @@ The formulation, the most correct of the four:
 - **Density:** `scipy.stats.norm.pdf`, the library implementation, rather than the formula typed out by hand.
 - **Peak:** `norm.pdf(mean)`, the density's true maximum. `np.max(pdf)` over the values is below the peak whenever no value sits exactly at the mean. For the negative probes it then made the tail cells and the cells as far below the mean equally "worst": with no cell at exactly t = 1 probe, every prior was 0 and min-max gave 0 / 0 = NaN for every cell (`tests/test_gaussian_prior.py`).
 - **Min-max:** `(x - min) / (max - min)`: one rounding, and exactly 0 and 1 at the extremes. MinMaxScaler's `x * (1 / range) + (0 - min / range)` has three roundings. A zero range now scales to 0 (MinMaxScaler's rule) instead of 0 / 0 = NaN, and NaN values are skipped.
-- **GMM:** the mixture is still fitted where origin/dev fitted it, even when `t` and `std` override its result (negative probes). origin/dev's fits drew their k-means initialisation from numpy's global random state; every fit now takes `random_state=seed`, the run's seed (part 1, user decision 2026-09-30), so it neither reads nor advances the global state. With origin/dev's global state seeded to the same seed, the pixel-score parameters are identical (tested).
+- **GMM:** the mixture is still fitted where origin/dev fitted it, even when `t` and `std` override its result (negative probes). origin/dev's fits drew their k-means initialisation from numpy's global random state; every fit now takes `random_state=seed`, the run's seed, so it neither reads nor advances the global state. With origin/dev's global state seeded to the same seed, the pixel-score parameters are identical (tested).
 
-**Difference on the crop**, on the real inputs of an origin/dev-equivalent run (`2fe97e2`), each prior computed both ways:
+**Difference on the crop**, on the real inputs of a run of origin/dev-equivalent code, each prior computed both ways:
 
 | Prior | Values differing | Max abs diff | Max rel diff |
 | --- | --- | --- | --- |
@@ -78,8 +78,8 @@ The formulation, the most correct of the four:
 | qv prior, `norm_p_qv_density` (C, pixels) | 355,579 of 16,000,000 | 3.3e-16 | 2.6e-4 (at values near 1e-12) |
 | ac prior, `norm_p_ac_density` (C, pixels) | 430,040 of 16,000,000 | 2.2e-16 | 7.6e-6 |
 
-**Downstream, end to end:** the crop was run step by step through the CLI (bubbleqc, doubletqc, voidqc, cellqc, generalqc, hqcr_ident, hqpr_metrices .. hqpr_bounding_box, ambientqc, hqtr_metrices .. hqtr_bounding_box) three times: twice with `2fe97e2` and once with the merge.
-The two `2fe97e2` runs gave identical outputs, all 95 parquet columns, so every difference below comes from the merge.
+**Downstream, end to end:** the crop was run step by step through the CLI (bubbleqc, doubletqc, voidqc, cellqc, generalqc, hqcr_ident, hqpr_metrices .. hqpr_bounding_box, ambientqc, hqtr_metrices .. hqtr_bounding_box) three times: twice with origin/dev-equivalent code and once with these changes.
+The two origin/dev-equivalent runs gave identical outputs, all 95 parquet columns, so every difference below comes from these changes.
 
 | Output | Differs from origin/dev |
 | --- | --- |

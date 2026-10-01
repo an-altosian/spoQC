@@ -1,4 +1,4 @@
-# Verbatim spoqc/hqr/combine_masks_zoom.py at 5dab4f6 (perf/round2-doublet-combine): the dask mask readers, the reference for core.raster.read_pixel_columns.
+# Verbatim spoqc/hqr/combine_masks_zoom.py before this change: the dask mask readers, the reference for core.raster.read_pixel_columns.
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt

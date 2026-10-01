@@ -1,6 +1,6 @@
 # hqtr/hqpr mask directories: larger parts, decoded in parallel
 
-User decision (2026-09-29): "can we do larger parts + parallel decoding?" Yes, both.
+The mask directories are written in larger parts, and read by decoding their row groups in parallel.
 Values, dtypes, the index and the row order are unchanged; only the file layout changes.
 
 ## Layout
@@ -20,7 +20,7 @@ Dask divisions follow the parts (`0, PART_ROWS, 2 PART_ROWS, ..., n - 1`); no sp
 
 ## Reader: `core.raster.read_pixel_columns(path, columns, n_rows, threads)`
 
-One implementation for every per-pixel parquet read (rule 16).
+One implementation for every per-pixel parquet read.
 The footers are read on `threads` threads; then every row group is decoded once for all requested columns (`read_row_group(use_threads=False)`, which releases the GIL) and copied into preallocated arrays, one row group per task on `threads` threads.
 It replaces the Arrow-scanner version, whose single consumer thread copied every batch and so held the pool near 3.1 of 4 cores.
 Nulls, type checks and the row-count check behave as before.
@@ -38,11 +38,11 @@ The dask readers of these directories now call it (one read per directory for al
 | `hqr/combine_masks_zoom` | two `dd.read_parquet` | two `read_pixel_columns` |
 | `unittests/test_all.py` (`-s unittest`) | row-hash sum over dask partitions | unchanged: the sum does not depend on the partitions (tested) |
 
-Still on dask, not part of this change: the qv/ac prior reads in `analysis_funcs` and `priors/combine_priors`, and the metric parquets (changed by perf/round2-writes-figures).
+Still on dask, not part of this change: the qv/ac prior reads in `analysis_funcs` and `priors/combine_priors`, and the metric parquets (whose writer, `helperfuncs.nparr_to_parquet`, is changed separately).
 
 ## Choosing the part size (measured)
 
-A 64,000,000-row subset (the first 6,400 parts) of the real full-slide tmp (`bench2/tmp_spoqc-integration2_n8_all_pyspy`), rewritten at each part size with `write_parts`.
+A 64,000,000-row subset (the first 6,400 parts) of the tmp folder of a real full-slide run, rewritten at each part size with `write_parts`.
 Measured with `taskset -c 16-19`, 4 threads (`pa.cpu_count() == 4`), warm page cache, 3 runs; cores busy = process CPU time / wall.
 A heavy run was using other cores of the host; the one write round it disturbed (cores 1-2) is discarded.
 
@@ -71,8 +71,8 @@ Write (`write_parts`, all columns, 4 threads), wall and peak-RSS increase over t
 - the read is decode-bound (flat from 1 M to 8 M rows) and the write is flat from 1 M rows;
 - 218 parts at 913 Mpx keep 4 x 30 threads busy, which 8 M-row parts (109) would not;
 - the write's extra memory is one part per thread in flight: +0.34 GB at 4 threads, about +2.5 GB at 30 threads (extrapolated), against about +1.9 GB at 1 M rows;
-- the per-pixel metric parquets (`helperfuncs.nparr_to_parquet`, perf/round2-writes-figures) use the same `parquet.PART_ROWS`: one constant serves both.
-  The hqtr qv/ac prior parquets keep their own, separately approved layout (`priors.hqtr.ac_or_qv.PART_ROWS = 1_000_000`).
+- the per-pixel metric parquets (`helperfuncs.nparr_to_parquet`) use the same `parquet.PART_ROWS`: one constant serves both.
+  The hqtr qv/ac prior parquets keep their own layout (`priors.hqtr.ac_or_qv.PART_ROWS = 1_000_000`, see `docs/perf/hqtr_ambient.md`).
 
 ## Before and after (4 threads)
 
@@ -96,9 +96,9 @@ spoQC no longer writes that layout; a tmp folder from an older spoQC is still re
 
 ## Exactness
 
-- `tests/test_mask_layout.py`: every generic reader (dask's frame with dtypes and index, the unittests' row hash, `read_pixel_columns`, the parts' schema with pandas metadata) sees the same bytes on origin/dev's layout and the new one; the dask readers' previous code (verbatim in `tests/legacy/`, 5dab4f6) on the old layout hands the same values, dtypes and index to `map_values_to_cells`, the refinement's MRF and the zoom frames as the new code on the new layout; the refinement writes the same rows in PART_ROWS parts.
+- `tests/test_mask_layout.py`: every generic reader (dask's frame with dtypes and index, the unittests' row hash, `read_pixel_columns`, the parts' schema with pandas metadata) sees the same bytes on origin/dev's layout and the new one; the dask readers' previous code (verbatim in `tests/legacy/`) on the old layout hands the same values, dtypes and index to `map_values_to_cells`, the refinement's MRF and the zoom frames as the new code on the new layout; the refinement writes the same rows in PART_ROWS parts.
   Layout mutants (two parts swapped, a row dropped or duplicated, one or every part's dtype changed) fail it. Hand-applied mutants of the reader wiring (a dtype cast in analysis_funcs, a renamed index in celltype_analysis, reversed rows in combine_masks_zoom, a cast in the refinement) each failed it too.
 - `tests/test_mask_layout.py::test_production_part_size_is_several_row_groups`: real PART_ROWS parts have 4 row groups and read back exactly.
 - `tests/test_pixel_scoring_differential.py`: `start_pixel_qc`'s mask_raw against origin/dev's pipeline, row for row, in 5,000-row parts; `write_parts` at 3,000 to 4,194,304-row parts against origin/dev's frame, byte for byte per row, schema included.
 - `tests/test_hqtr_ambient_differential.py`: the refinement's mask_smoothed_raw layout against `dd.from_pandas` + origin/dev's writer.
-- `tests/test_read_pixel_columns_differential.py`: the reader against the verbatim 1cd6406 reader on every layout, at 1, 2 and 7 threads; 10 reader mutants (part order, row-group order, first row group only, row count check, type check, dtype, null promotion, null values, `out` ignored, integer nulls cast into `out`) are caught.
+- `tests/test_read_pixel_columns_differential.py`: the reader against the verbatim previous (Arrow-scanner) reader on every layout, at 1, 2 and 7 threads; 10 reader mutants (part order, row-group order, first row group only, row count check, type check, dtype, null promotion, null values, `out` ignored, integer nulls cast into `out`) are caught.

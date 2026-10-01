@@ -1,4 +1,4 @@
-# Verbatim spoqc/additional_analysis/analysis_funcs.py at 5dab4f6 (perf/round2-doublet-combine): the dask mask readers, the reference for core.raster.read_pixel_columns.
+# Verbatim spoqc/additional_analysis/analysis_funcs.py before this change: the dask mask readers, the reference for core.raster.read_pixel_columns.
 # In[]
 import numpy as np
 import pandas as pd

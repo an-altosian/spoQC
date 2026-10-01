@@ -1,5 +1,5 @@
 """Differential test: define_bounding_boxes and spoqc.core.raster vs a verbatim copy of the
-original (tests/reference_bounding_boxes_66736f2.py).
+original (tests/reference_bounding_boxes.py).
 
 Every figure call is captured instead of written (plot_pixels, plt.imshow, plt.plot, save_figure),
 so the arrays handed to the figure code are compared too, together with the returned boxes and
@@ -24,7 +24,7 @@ import xarray as xr
 from skimage.measure import label, regionprops
 from skimage.morphology import dilation, disk
 
-import reference_bounding_boxes_66736f2 as ref
+import reference_bounding_boxes as ref
 from legacy.parquet_writer import ddf_to_parquet  # origin/dev's writer, the reference for core.parquet
 from spoqc import helperfuncs
 from spoqc.core import figures, raster
@@ -307,7 +307,7 @@ def write_density(tmp, density):
 
 def is_density_figure(event):
     """The reference's 'transcript_density' figure, a duplicate of the hqtr_metrices one that the
-    new bounding-box step no longer writes (user decision: one figure per plot)."""
+    new bounding-box step no longer writes (one figure per plot)."""
     if event[0] == "transcript_density_figure":
         return True
     return event[0] == "plot_pixels" and event[1][1][3] == ("str", "'transcript_density'")
@@ -599,8 +599,8 @@ class FakeSdata(dict):
 
 def test_combine_masks_zoom_no_longer_writes_the_duplicate_density_figure(tmp_path):
     """The zoom step reads the saved density for its hqtr input figure and writes no full-image
-    'transcript_density' figure (a duplicate of the hqtr_metrices one; user decision: one figure
-    per plot). Its unsmoothed pass still raises the pre-existing NotImplementedError.
+    'transcript_density' figure (a duplicate of the hqtr_metrices one: one figure per
+    plot). Its unsmoothed pass still raises the pre-existing NotImplementedError.
 
     Pre-existing (origin/dev too): combined_beliefs reads *_beliefs_smoothed columns that beliefs_df
     does not have, so the step dies with a KeyError before its modality loop. The test pins that,

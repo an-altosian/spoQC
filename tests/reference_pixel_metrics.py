@@ -1,4 +1,4 @@
-"""Verbatim per-pixel metric code of perf/integration fca01f5, for differential tests.
+"""Verbatim per-pixel metric code before this change, for differential tests.
 
 Each section is the file named in its banner, copied unchanged except that
 "from ... import helperfuncs" becomes "from spoqc import helperfuncs" and the

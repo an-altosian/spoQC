@@ -1,4 +1,4 @@
-"""PR2: four places where a scalar or a count was computed by walking the whole
+"""Four places where a scalar or a count was computed by walking the whole
 array through the Python interpreter, or by materializing a copy of it.
 
 Each test pins behaviour (identical result) and, where the win is memory rather
