@@ -1,7 +1,7 @@
 """Real-data differential check: original (db00d98) vs vectorised convexity QC.
 
 Not collected by pytest. Usage:
-    PYTHONPATH=<worktree> python tests/realdata_convexity_equivalence.py <sdata.zarr> <threads> [--raw] [--skip-reference]
+    PYTHONPATH=<repo> python tests/realdata_convexity_equivalence.py <sdata.zarr> <threads> [--raw] [--skip-reference]
 
 By default the geometries are first corrected with correct_for_valid_geometries,
 which is the state cli.py hands to run_qc_cell; --raw compares on the geometries
