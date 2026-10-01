@@ -1,7 +1,7 @@
 """Per-pixel metric parquets: helperfuncs.nparr_to_parquet writes a directory of parts through
 core.parquet.write_parts (dask_index=False) instead of one pyarrow file.
 
-Differential against the verbatim previous writer and reader (spoQC perf/integration2 1cd6406):
+Differential against the verbatim previous writer and reader:
 the values every reader returns are bit-identical, and each part is byte for byte the file the
 previous writer writes for that part's rows. Mutants of the new code must fail the comparison.
 """
@@ -24,7 +24,7 @@ N = 5_003  # rows; parts of PART_ROWS rows, the last one short
 PART_ROWS = 400  # 13 parts: part.10 .. part.12 sort before part.2 lexicographically
 
 
-# ---- verbatim previous code (helperfuncs.py of 1cd6406) ------------------------------------
+# ---- verbatim previous code (helperfuncs.py) -----------------------------------------------
 def old_nparr_to_parquet(np_arr, prefix, spoqc_tmp_folder, suffix):
     outfile = f"{spoqc_tmp_folder}/{prefix}_output_{suffix}.parquet"
     table = pa.Table.from_arrays([pa.array(np_arr)], names=[prefix])

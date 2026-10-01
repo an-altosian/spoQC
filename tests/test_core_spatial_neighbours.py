@@ -622,7 +622,7 @@ def test_island_scores_match_original_on_float32_straddle(rng, fixture):
 
 
 def test_island_scores_detect_formula_decision_on_float32_straddle(rng, monkeypatch):
-    """Mutant: deciding with the float32 sqrt formula (the first version) changes the islands."""
+    """Mutant: deciding with the float32 sqrt formula changes the islands."""
     xy = straddle_pairs(rng, 15)
     expected_idx, _ = original_island_scores(xy, 15)
     formula = spatial.pairs_within

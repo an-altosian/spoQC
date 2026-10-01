@@ -3,7 +3,7 @@
 origin/dev wrote them as 10,000-row dask parts (91,296 files per directory at 913 Mpx); they are
 now written in PART_ROWS-row parts. Only the layout changes: every reader must see the same rows,
 values, dtypes and index. Each reader of these directories is compared on the two layouts, the
-dask ones by their verbatim previous code (tests/legacy/, 5dab4f6) reading the old layout against
+dask ones by their verbatim previous code (tests/legacy/) reading the old layout against
 the current code reading the new one, and mutants of the new layout (part order, row count,
 dtype) must fail the comparison.
 """
@@ -393,7 +393,7 @@ def test_celltype_analysis_hands_on_the_same_values(
 
 
 def old_from_pandas_starts(n_rows, n_partitions):
-    """core.parquet.from_pandas_starts at 5dab4f6, which the legacy refinement writes with."""
+    """The previous core.parquet.from_pandas_starts, which the legacy refinement writes with."""
     size, residual = divmod(n_rows, n_partitions)
     sizes = [size + (i < residual) for i in range(n_partitions)]
     starts = np.cumsum([0, *sizes[:-1]]).tolist()

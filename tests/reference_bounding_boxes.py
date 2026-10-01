@@ -1,5 +1,5 @@
 """Verbatim reference: spoqc/image_analysis/bounding_boxes.py and
-spoqc/metrics/transcript_density/transcript_density_image.py at 66736f2 (numerically identical to origin/dev).
+spoqc/metrics/transcript_density/transcript_density_image.py before this change (numerically identical to origin/dev).
 
 Only the package-relative imports are made absolute; the bodies are unchanged.
 """

@@ -1,7 +1,7 @@
-"""Real-data differential check: original (66736f2) vs new define_bounding_boxes, hqpr and hqtr.
+"""Real-data differential check: original vs new define_bounding_boxes, hqpr and hqtr.
 
 Not collected by pytest. Usage:
-    PYTHONPATH=<worktree> python tests/realdata_bounding_boxes_equivalence.py <sdata.zarr> <mask parquet> <threads> [crop]
+    PYTHONPATH=<repo> python tests/realdata_bounding_boxes_equivalence.py <sdata.zarr> <mask parquet> <threads> [crop]
 
 Crops the sample the way cli.py's TESTING mode does (origin 10500, `crop` pixels square), cuts the
 same window out of a real full-scale MRF mask (<mask parquet>: an `*_output_mask_smoothed_raw`
@@ -28,7 +28,7 @@ import spatialdata as sd
 from spatialdata.models import PointsModel
 
 sys.path.insert(0, os.path.dirname(__file__))
-import reference_bounding_boxes_66736f2 as ref  # noqa: E402
+import reference_bounding_boxes as ref  # noqa: E402
 from test_bounding_boxes_equivalence import (
     assert_same,
     run_define,

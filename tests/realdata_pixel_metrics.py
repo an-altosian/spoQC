@@ -1,7 +1,7 @@
 """Real-data check (not collected by pytest): structural image analysis, original vs new, on a crop.
 
 Usage:
-    PYTHONPATH=<worktree>:<worktree>/tests python tests/realdata_pixel_metrics.py <crop.npy> <threads>
+    PYTHONPATH=<repo>:<repo>/tests python tests/realdata_pixel_metrics.py <crop.npy> <threads>
 
 <crop.npy> is a 2D uint16 morphology image crop (e.g. 4000 x 4000 of a Xenium morphology_focus s0).
 Runs start_image_struc_analyis for hqpr on the crop and for hqtr on an int64 density-like image
@@ -19,7 +19,7 @@ import numba
 import numpy as np
 from pytest import MonkeyPatch
 
-import reference_pixel_metrics_fca01f5 as reference
+import reference_pixel_metrics as reference
 from spoqc.image_analysis._slidingwindow import texture_metrics
 from spoqc.metrics.image import pixel_metrics
 from test_pixel_metrics_differential import compare, float64_reference_texture, float64_texture, record_calls

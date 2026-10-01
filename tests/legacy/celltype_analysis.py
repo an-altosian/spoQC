@@ -1,4 +1,4 @@
-# Verbatim spoqc/image_analysis/celltype_analysis.py at 5dab4f6 (perf/round2-doublet-combine): the dask mask readers, the reference for core.raster.read_pixel_columns.
+# Verbatim spoqc/image_analysis/celltype_analysis.py before this change: the dask mask readers, the reference for core.raster.read_pixel_columns.
 import pandas as pd
 import numpy as np
 import plotly.express as px

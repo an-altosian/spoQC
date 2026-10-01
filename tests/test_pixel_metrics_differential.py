@@ -1,6 +1,6 @@
 """Differential test: structural image analysis (hqpr/hqtr pixel metrics) against the verbatim original.
 
-tests/reference_pixel_metrics_fca01f5.py holds perf/integration fca01f5's metric wrappers and
+tests/reference_pixel_metrics.py holds the previous metric wrappers and
 start_image_struc_analyis. Both versions run on the same synthetic images; every parquet written
 to the metrices folder (each is a pixel-clustering feature) must match byte for byte, with the
 same file names, and every plot_pixels call must receive the same array, dtype and arguments.
@@ -20,7 +20,7 @@ import pytest
 import xarray as xr
 from skimage.feature import local_binary_pattern
 
-import reference_pixel_metrics_fca01f5 as reference
+import reference_pixel_metrics as reference
 from spoqc import helperfuncs
 from spoqc.image_analysis import _slidingwindow, structure_analysis
 from spoqc.metrics.image import pixel_metrics, utility

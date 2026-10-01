@@ -1,7 +1,6 @@
-# hqpr/hqtr pixel scoring: approved differences from origin/dev
+# hqpr/hqtr pixel scoring: differences from origin/dev
 
 Pixel scoring (`image_analysis/pixel_scoring_dask.start_pixel_qc`) is bit-identical to origin/dev db00d98 except for the two changes below.
-The user approved both on 2026-09-28.
 Both were measured on a real 4000 x 4000 crop of `breast2.zarr` (morphology_focus s0, staining 0, 16,000,000 pixels).
 
 ## 1. Cluster means: a deterministic reduction
@@ -69,4 +68,4 @@ These figures are estimates, not measurements.
 - **After pixel QC returns:** about 14 GB stays resident, of which 7.3 GB is the beliefs handed to refinement. origin/dev left about 150 GB resident.
 - **In-RAM MRF:** adds about 41 GB on top.
 
-The integrated full-scale run will measure the actual peak.
+The actual full-scale peak is not measured here.
